@@ -15,8 +15,9 @@ namespace memorylayer {
 
 struct SaveJob {
     std::string agent_id;
-    std::string user_text;
+    std::string user_text;   // full context stored in DB (human-readable)
     std::string assist_text;
+    std::string embed_text;  // last user message — what gets embedded for retrieval
 };
 
 class MemoryProxy {
@@ -44,7 +45,10 @@ private:
     void saver_loop();
     void enqueue_save(const std::string& agent_id,
                       const std::string& user_text,
-                      const std::string& assist_text);
+                      const std::string& assist_text,
+                      const std::string& embed_text = "");
+
+    std::atomic<int64_t> save_drop_count_{0};
 
     std::string retrieve_and_inject(const std::string& agent_id,
                                     const std::string& user_text,

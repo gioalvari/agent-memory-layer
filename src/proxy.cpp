@@ -68,7 +68,7 @@ std::string MemoryProxy::extract_conversation_context(const json& messages, int 
     std::string context;
     for (int i = start; i < static_cast<int>(turns.size()); i++) {
         if (!context.empty()) context += " | ";
-        context += turns[i].first + ": " + turns[i].second.substr(0, 200);
+        context += turns[i].first + ": " + turns[i].second;
     }
 
     return context;
@@ -104,14 +104,16 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
 void MemoryProxy::enqueue_save(const std::string& agent_id,
                                 const std::string& user_text,
-                                const std::string& assist_text) {
+                                const std::string& assist_text,
+                                const std::string& embed_text) {
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
         if (save_queue_.size() >= 100) {
-            LOG_WARN("proxy", "Save queue full, dropping oldest");
+            ++save_drop_count_;
+            LOG_WARN("proxy", "Save queue full (drops=" + std::to_string(save_drop_count_.load()) + "), dropping oldest");
             save_queue_.pop();
         }
-        save_queue_.push({agent_id, user_text, assist_text});
+        save_queue_.push({agent_id, user_text, assist_text, embed_text});
     }
     save_cv_.notify_one();
 }
@@ -129,7 +131,9 @@ void MemoryProxy::saver_loop() {
 
         if (!embedder_.is_ready()) continue;
 
-        auto user_emb = embedder_.embed(job.user_text);
+        // embed_text holds the bare user query; user_text holds the full context for display
+        const std::string& to_embed = job.embed_text.empty() ? job.user_text : job.embed_text;
+        auto user_emb = embedder_.embed(to_embed);
         auto assist_emb = embedder_.embed(job.assist_text);
         if (user_emb.empty() || assist_emb.empty()) continue;
 
@@ -209,6 +213,7 @@ void MemoryProxy::run() {
         json result = {
             {"total_memories", stats.total_memories},
             {"total_agents", stats.total_agents},
+            {"save_queue_drops", save_drop_count_.load()},
             {"per_agent", json::object()}
         };
         for (const auto& [agent, count] : stats.per_agent_counts) {
@@ -290,7 +295,7 @@ void MemoryProxy::run() {
                     std::string assist_text = resp_json["choices"][0]["message"]["content"].get<std::string>();
                     std::string conv_context = extract_conversation_context(messages);
                     std::string save_user = conv_context.empty() ? user_text : conv_context;
-                    enqueue_save(agent_id, save_user, assist_text);
+                    enqueue_save(agent_id, save_user, assist_text, user_text);
                 } catch (const std::exception& e) {
                     LOG_WARN("proxy", std::string("Failed to parse backend response for memory save: ") + e.what());
                 }
@@ -306,7 +311,7 @@ void MemoryProxy::run() {
 
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, mod_body, backend_url, agent_id_copy, save_user]
+                [this, mod_body, backend_url, agent_id_copy, save_user, user_text_copy]
                 (size_t /*offset*/, httplib::DataSink& sink) -> bool {
                     httplib::Client backend(backend_url);
                     backend.set_read_timeout(300);
@@ -354,7 +359,7 @@ void MemoryProxy::run() {
 
                     // Save accumulated content to memory after streaming completes
                     if (!accumulated_content.empty() && !save_user.empty()) {
-                        enqueue_save(agent_id_copy, save_user, accumulated_content);
+                        enqueue_save(agent_id_copy, save_user, accumulated_content, user_text_copy);
                     }
 
                     sink.done();
