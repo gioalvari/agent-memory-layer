@@ -85,6 +85,7 @@ private:
     mutable std::mutex cache_mutex_;
 
     void load_cache();
+    void recompact_embeddings();
     void add_to_cache(int64_t id, const std::string& agent_id, double created_at,
                       const std::string& user_text, const std::string& assist_text,
                       int access_count,

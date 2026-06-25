@@ -1,4 +1,5 @@
 #include "memorylayer/embedding.h"
+#include "memorylayer/logger.h"
 #include "llama.h"
 #include <cstring>
 #include <cmath>
@@ -26,7 +27,7 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
 
     llama_model* model = llama_model_load_from_file(model_path.c_str(), model_params);
     if (!model) {
-        std::cerr << "[embedding] Failed to load model: " << model_path << "\n";
+        LOG_ERROR("embedding", "Failed to load model: " + model_path);
         return;
     }
     model_ = model;
@@ -38,7 +39,7 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
 
     llama_context* ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
-        std::cerr << "[embedding] Failed to create context\n";
+        LOG_ERROR("embedding", "Failed to create context");
         llama_model_free(model);
         model_ = nullptr;
         return;
@@ -48,8 +49,7 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
     n_embd_ = llama_model_n_embd(model);
     ready_ = true;
 
-    std::cout << "[embedding] Model loaded: " << model_path
-              << " (dim=" << n_embd_ << ", gpu_layers=" << gpu_layers << ")\n";
+    LOG_INFO("embedding", "Model loaded: " + model_path + " (dim=" + std::to_string(n_embd_) + ", gpu_layers=" + std::to_string(gpu_layers) + ")");
 
     worker_thread_ = std::thread(&EmbeddingWorker::worker_loop, this);
 }
@@ -69,7 +69,7 @@ void EmbeddingWorker::shutdown() {
     }
 }
 
-std::vector<float> EmbeddingWorker::embed(const std::string& text) {
+std::vector<float> EmbeddingWorker::embed(const std::string& text, EmbedPriority priority) {
     if (!ready_) return {};
 
     std::promise<std::vector<float>> promise;
@@ -77,7 +77,11 @@ std::vector<float> EmbeddingWorker::embed(const std::string& text) {
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        jobs_.push({text, std::move(promise)});
+        if (priority == EmbedPriority::HIGH) {
+            jobs_high_.push({text, std::move(promise)});
+        } else {
+            jobs_normal_.push({text, std::move(promise)});
+        }
     }
     cv_.notify_one();
 
@@ -93,10 +97,17 @@ void EmbeddingWorker::worker_loop() {
         EmbedJob job;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this] { return !jobs_.empty() || stop_; });
-            if (stop_ && jobs_.empty()) return;
-            job = std::move(jobs_.front());
-            jobs_.pop();
+            cv_.wait(lock, [this] { return !jobs_high_.empty() || !jobs_normal_.empty() || stop_; });
+            if (stop_ && jobs_high_.empty() && jobs_normal_.empty()) return;
+            
+            // Drain high-priority first
+            if (!jobs_high_.empty()) {
+                job = std::move(jobs_high_.front());
+                jobs_high_.pop();
+            } else {
+                job = std::move(jobs_normal_.front());
+                jobs_normal_.pop();
+            }
         }
 
         // Tokenize

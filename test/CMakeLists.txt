@@ -15,3 +15,8 @@ add_executable(test_cosine test_cosine.cpp ../src/memory_store.cpp)
 target_include_directories(test_cosine PRIVATE ../include ../deps)
 target_link_libraries(test_cosine PRIVATE sqlite3)
 add_test(NAME test_cosine COMMAND test_cosine)
+
+add_executable(test_scoring test_scoring.cpp ../src/memory_store.cpp)
+target_include_directories(test_scoring PRIVATE ../include ../deps)
+target_link_libraries(test_scoring PRIVATE sqlite3)
+add_test(NAME test_scoring COMMAND test_scoring)

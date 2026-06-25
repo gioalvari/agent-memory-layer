@@ -269,6 +269,7 @@ void MemoryStore::evict(const std::string& agent_id) {
                 return std::find(ids_to_remove.begin(), ids_to_remove.end(), e.id) != ids_to_remove.end();
             }),
         cache_.end());
+    recompact_embeddings();  // Reclaim memory from evicted entries
 }
 
 static float cosine_similarity(const float* a, const float* b, int dim) {
@@ -413,6 +414,7 @@ bool MemoryStore::remove(int64_t memory_id) {
         std::lock_guard<std::mutex> lock(cache_mutex_);
         cache_.erase(std::remove_if(cache_.begin(), cache_.end(),
             [memory_id](const CachedEntry& e) { return e.id == memory_id; }), cache_.end());
+        recompact_embeddings();  // Reclaim memory from removed entry
     }
     return changes > 0;
 }
@@ -430,6 +432,33 @@ MemoryStore::Stats MemoryStore::get_stats() const {
     stats.total_agents = static_cast<int>(counts.size());
     stats.per_agent_counts.assign(counts.begin(), counts.end());
     return stats;
+}
+
+void MemoryStore::recompact_embeddings() {
+    // Caller must hold cache_mutex_
+    if (cache_.empty()) {
+        embeddings_.clear();
+        return;
+    }
+
+    std::vector<float> new_embeddings;
+    new_embeddings.reserve(cache_.size() * emb_dim_ * 2);
+
+    for (auto& entry : cache_) {
+        const float* u_ptr = embeddings_.data() + entry.user_emb_offset;
+        const float* a_ptr = embeddings_.data() + entry.assist_emb_offset;
+
+        int new_user_offset = static_cast<int>(new_embeddings.size());
+        new_embeddings.insert(new_embeddings.end(), u_ptr, u_ptr + emb_dim_);
+
+        int new_assist_offset = static_cast<int>(new_embeddings.size());
+        new_embeddings.insert(new_embeddings.end(), a_ptr, a_ptr + emb_dim_);
+
+        entry.user_emb_offset = new_user_offset;
+        entry.assist_emb_offset = new_assist_offset;
+    }
+
+    embeddings_ = std::move(new_embeddings);
 }
 
 } // namespace memorylayer

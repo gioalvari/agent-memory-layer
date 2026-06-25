@@ -10,6 +10,8 @@
 
 namespace memorylayer {
 
+enum class EmbedPriority { HIGH, NORMAL };
+
 class EmbeddingWorker {
 public:
     EmbeddingWorker(const std::string& model_path, int gpu_layers);
@@ -18,7 +20,7 @@ public:
     EmbeddingWorker(const EmbeddingWorker&) = delete;
     EmbeddingWorker& operator=(const EmbeddingWorker&) = delete;
 
-    std::vector<float> embed(const std::string& text);
+    std::vector<float> embed(const std::string& text, EmbedPriority priority = EmbedPriority::NORMAL);
     int dimension() const { return n_embd_; }
     bool is_ready() const { return ready_; }
     void shutdown();
@@ -37,7 +39,8 @@ private:
     bool ready_ = false;
 
     std::thread worker_thread_;
-    std::queue<EmbedJob> jobs_;
+    std::queue<EmbedJob> jobs_high_;   // Priority queue for search
+    std::queue<EmbedJob> jobs_normal_; // Normal queue for save
     std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> stop_{false};

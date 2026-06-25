@@ -1,5 +1,6 @@
 #include "memorylayer/proxy.h"
 #include "memorylayer/injector.h"
+#include "memorylayer/logger.h"
 #include "httplib.h"
 #include "json.hpp"
 #include <iostream>
@@ -68,7 +69,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                                               json& messages) {
     if (user_text.empty() || !embedder_.is_ready()) return "";
 
-    auto query_emb = embedder_.embed(user_text);
+    auto query_emb = embedder_.embed(user_text, EmbedPriority::HIGH);
     if (query_emb.empty()) return "";
 
     auto memories = store_.search(query_emb, agent_id, cfg_.top_k,
@@ -86,8 +87,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         last_injection_ = {agent_id, user_text, context, static_cast<double>(std::time(nullptr))};
     }
 
-    std::cout << "[proxy] Injected " << memories.size() << " memories for agent='"
-              << (agent_id.empty() ? "global" : agent_id) << "'\n";
+    LOG_INFO("proxy", "Injected " + std::to_string(memories.size()) + " memories for agent='" + (agent_id.empty() ? "global" : agent_id) + "'");
 
     return context;
 }
@@ -98,7 +98,7 @@ void MemoryProxy::enqueue_save(const std::string& agent_id,
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
         if (save_queue_.size() >= 100) {
-            std::cerr << "[proxy] Save queue full, dropping oldest\n";
+            LOG_WARN("proxy", "Save queue full, dropping oldest");
             save_queue_.pop();
         }
         save_queue_.push({agent_id, user_text, assist_text});
@@ -126,12 +126,11 @@ void MemoryProxy::saver_loop() {
         int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
         if (dup_id > 0) {
             store_.touch(dup_id);
-            std::cout << "[memory] Deduplicated: merged with memory #" << dup_id << "\n";
+            LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
         } else {
             store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
             store_.evict(job.agent_id);
-            std::cout << "[memory] Saved new memory for agent='"
-                      << (job.agent_id.empty() ? "global" : job.agent_id) << "'\n";
+            LOG_INFO("memory", "Saved new memory for agent='" + (job.agent_id.empty() ? "global" : job.agent_id) + "'");
         }
     }
 }
@@ -149,8 +148,12 @@ void MemoryProxy::run() {
         std::string agent_id = req.has_param("agent_id") ? req.get_param_value("agent_id") : "";
         int limit = 50;
         int offset = 0;
-        if (req.has_param("limit")) limit = std::stoi(req.get_param_value("limit"));
-        if (req.has_param("offset")) offset = std::stoi(req.get_param_value("offset"));
+        if (req.has_param("limit")) {
+            try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        }
+        if (req.has_param("offset")) {
+            try { offset = std::stoi(req.get_param_value("offset")); } catch (...) {}
+        }
 
         auto memories = store_.list_memories(agent_id, limit, offset);
 
@@ -170,7 +173,14 @@ void MemoryProxy::run() {
 
     // Admin API: delete a memory
     svr.Delete(R"(/admin/memories/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        int64_t id = std::stoll(req.matches[1]);
+        int64_t id;
+        try {
+            id = std::stoll(req.matches[1]);
+        } catch (...) {
+            res.status = 400;
+            res.set_content(R"({"error":"Invalid memory ID"})", "application/json");
+            return;
+        }
         bool removed = store_.remove(id);
         if (removed) {
             res.set_content(R"({"status":"deleted"})", "application/json");
@@ -207,6 +217,13 @@ void MemoryProxy::run() {
     });
 
     svr.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
+        // Body size limit: 1MB
+        if (req.body.size() > 1024 * 1024) {
+            res.status = 413;
+            res.set_content(R"({"error":"Request body too large"})", "application/json");
+            return;
+        }
+
         json body;
         try {
             body = json::parse(req.body);
@@ -353,10 +370,9 @@ void MemoryProxy::run() {
         return httplib::Server::HandlerResponse::Unhandled;
     });
 
-    std::cout << "[proxy] Listening on http://0.0.0.0:" << cfg_.port << "\n";
-    std::cout << "[proxy] Backend: " << cfg_.backend_url << "\n";
-    std::cout << "[proxy] Memory injection: top_k=" << cfg_.top_k
-              << ", decay_days=" << cfg_.decay_days << "\n";
+    LOG_INFO("proxy", "Listening on http://0.0.0.0:" + std::to_string(cfg_.port));
+    LOG_INFO("proxy", "Backend: " + cfg_.backend_url);
+    LOG_INFO("proxy", "Memory injection: top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
 
     svr.listen("0.0.0.0", cfg_.port);
 }
