@@ -31,10 +31,38 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 - ⚡ **Metal-accelerated embeddings** — local inference via llama.cpp, no network calls
 - 📡 **Real SSE streaming** — true chunked streaming passthrough with background content capture
 - 🎯 **Priority embedding queue** — search requests (HIGH) preempt background saves (NORMAL)
+- ⚡ **Batch embedding** — up to 8 texts encoded in a single `llama_decode`; ~2–3× throughput for save bursts
+- 🔍 **Injection history ring** — last 10 memory injections inspectable via admin API (newest first)
 - 🛡️ **Input validation** — 1MB body limit, JSON schema checks, proper HTTP error codes
 - 📊 **Admin API** — runtime stats, memory listing, debug injection inspection
 - 🔧 **Token budget control** — configurable max tokens for injected memory context
 - 📝 **Structured logging** — timestamped `[INFO/WARN/ERROR][component]` output
+
+## Running with Ollama
+
+```bash
+# 1. Start Ollama (provides OpenAI-compatible API on port 11434)
+ollama serve
+
+# 2. Pull a chat model
+ollama pull llama3.2
+
+# 3. Download embedding model
+wget -P ~/models \
+  https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf
+
+# 4. Start the memory proxy
+./build/memory-layer \
+  --embedding-model ~/models/nomic-embed-text-v1.5.Q8_0.gguf \
+  --backend http://localhost:11434 \
+  --port 8800
+
+# 5. Smoke test
+curl http://localhost:8800/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Id: test-agent" \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"My project uses CMake and C++17."}]}'
+```
 
 ## Quick Start
 
@@ -102,7 +130,7 @@ Runtime introspection without stopping the server:
 | `/admin/stats` | GET | Memory count, embedding queue depth, uptime |
 | `/admin/memories` | GET | List memories (`?agent_id=X&limit=N&offset=M`) |
 | `/admin/memories/:id` | DELETE | Remove a specific memory by ID |
-| `/admin/debug/last-injection` | GET | Inspect the last memory injection payload |
+| `/admin/debug/last-injection` | GET | JSON array of last 10 injections, newest first |
 
 ```bash
 # Check stats
@@ -133,6 +161,61 @@ Relevant past interactions (scored by relevance × recency):
 If no relevant memories are found (score < 0.3), the request passes through **unmodified**.
 
 ## Architecture
+
+### Full Request Lifecycle
+
+```
+ ┌──────────────────────────────────────────────────────────────────┐
+ │               Agent / VS Code / Cursor / curl                     │
+ │   POST /v1/chat/completions  {"messages":[...], "model":"..."}    │
+ └────────────────────────────┬─────────────────────────────────────┘
+                              │ HTTP (port 8800)
+ ┌────────────────────────────▼─────────────────────────────────────┐
+ │              MemoryProxy  ── main thread                          │
+ │  1. Validate (size ≤ 1MB, JSON schema, required fields)          │
+ │  2. Extract user_text + agent_id (X-Agent-Id header)             │
+ │  3. embed(user_text, HIGH) ─────────────────────────────────┐    │
+ └────────────────────────────┬────────────────────────────────┼────┘
+              wait future.get()│                                │
+ ┌────────────────────────────▼────────────────────────────────┼────┐
+ │           EmbeddingWorker  ── background thread             │    │
+ │  ┌──────────────────────────────────────────────────────┐   │    │
+ │  │  Priority Queue                                       │   │    │
+ │  │  ■ HIGH   (search queries — drain first, low latency)│   │    │
+ │  │  □ NORMAL (background saves — drain after)           │   │    │
+ │  └───────────────────────────┬──────────────────────────┘   │    │
+ │            ┌─────────────────▼──────────────────────────┐   │    │
+ │            │ Batch path  (≤8 texts, total ≤2048 tokens): │   │    │
+ │            │   1 × llama_decode  →  N embeddings (fast)  │   │    │
+ │            │ Serial fallback     (token budget overflow): │   │    │
+ │            │   N × llama_decode  (1 text each)            │   │    │
+ │            └──────────────────────────────────────────────┘   │    │
+ └─────────────────────────────────────────────────────────────┼────┘
+                              query_emb ──────────────────────-┘
+ ┌──────────────────────────────────────────────────────────────────┐
+ │              MemoryStore  ── shared (mutex-guarded)               │
+ │  4. L2-normalize query_emb                                        │
+ │  5. Scan in-RAM float cache:                                      │
+ │       score = max(dot(q, user_emb), dot(q, assist_emb))          │
+ │             × decay(age_hours, decay_days)                        │
+ │             × agent_boost (1.2× if agent_id matches)             │
+ │  6. Return top-K where score ≥ min_score (default 0.3)           │
+ └────────────────────────────┬─────────────────────────────────────┘
+                              │ Vec<SearchResult>
+ ┌────────────────────────────▼─────────────────────────────────────┐
+ │                         Injector                                  │
+ │  7. Format: "- [Xh ago, score=Y] User: ... → Asst: ..."          │
+ │  8. Trim to --max-inject-tokens budget                            │
+ │  9. Prepend block to messages[0] (system prompt)                  │
+ └────────────────────────────┬─────────────────────────────────────┘
+                              │ enriched request JSON
+ ┌────────────────────────────▼─────────────────────────────────────┐
+ │         LLM Backend  (Ollama / llama-server, port 8080+)          │
+ │  10. Forward enriched JSON                                        │
+ │  11. Stream SSE chunks → proxy → agent (real token-by-token)     │
+ │  12. Background: capture assistant text → embed(NORMAL) → SQLite │
+ └──────────────────────────────────────────────────────────────────┘
+```
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -168,6 +251,7 @@ If no relevant memories are found (score < 0.3), the request passes through **un
 - **Single-process, multi-thread**: proxy thread + embedding worker + background saver. No IPC complexity.
 - **In-RAM vector index**: all embeddings loaded at startup for O(n) brute-force cosine search. Fast up to ~10k memories; no ANN index needed at this scale.
 - **Priority embedding queue**: search requests (user-facing latency) preempt save requests (background). Prevents slow saves from blocking fast lookups.
+- **Batch embedding**: up to 8 texts are encoded in a single `llama_decode` when their total token count fits the context window (≤ 2048 tokens). Gives ~2–3× throughput improvement on bursts of save requests. Falls back to serial processing on overflow.
 - **SQLite WAL mode**: concurrent reads + single writer. Embeddings stored as BLOBs, loaded into flat float arrays on startup.
 - **Graceful degradation**: if embedding model fails to load, proxy passes through all requests unmodified (no memories injected or saved).
 
