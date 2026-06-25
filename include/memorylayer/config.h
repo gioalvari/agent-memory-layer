@@ -17,6 +17,7 @@ struct Config {
     int gpu_layers = 99;
     float min_score_threshold = 0.3f;
     float agent_boost = 1.2f;
+    int max_inject_tokens = 2048;  // Max tokens for injected memory context
 };
 
 Config parse_args(int argc, char* argv[]);

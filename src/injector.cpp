@@ -36,6 +36,43 @@ std::string format_memory_context(const std::vector<ScoredMemory>& memories, dou
     return oss.str();
 }
 
+int estimate_tokens(const std::string& text) {
+    // Heuristic: ~4 characters per token (conservative for English text)
+    return static_cast<int>(text.size()) / 4 + 1;
+}
+
+std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
+                                           double now_unix, int max_tokens) {
+    if (memories.empty()) return "";
+
+    std::string header = "<memory context>\nRelevant past interactions:\n";
+    std::string footer = "</memory context>";
+    int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+
+    if (budget <= 0) return "";
+
+    std::ostringstream oss;
+    oss << header;
+
+    int used_tokens = 0;
+    int included = 0;
+    for (const auto& sm : memories) {
+        std::string line = format_memory_line(sm, now_unix) + "\n";
+        int line_tokens = estimate_tokens(line);
+
+        if (used_tokens + line_tokens > budget) break;
+
+        oss << line;
+        used_tokens += line_tokens;
+        included++;
+    }
+
+    if (included == 0) return "";
+
+    oss << footer;
+    return oss.str();
+}
+
 void inject_memories(nlohmann::json& messages, const std::string& memory_context) {
     if (memory_context.empty()) return;
 

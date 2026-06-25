@@ -5,6 +5,9 @@
 #include <iostream>
 #include <sstream>
 #include <ctime>
+#include <algorithm>
+#include <vector>
+#include <utility>
 
 using json = nlohmann::json;
 
@@ -38,6 +41,28 @@ std::string MemoryProxy::extract_last_user_message(const json& messages) const {
     return "";
 }
 
+std::string MemoryProxy::extract_conversation_context(const json& messages, int max_turns) const {
+    std::vector<std::pair<std::string, std::string>> turns;
+
+    for (const auto& msg : messages) {
+        std::string role = msg.value("role", "");
+        std::string content = msg.value("content", "");
+        if (role == "user" || role == "assistant") {
+            turns.push_back({role, content});
+        }
+    }
+
+    int start = std::max(0, static_cast<int>(turns.size()) - max_turns * 2);
+
+    std::string context;
+    for (int i = start; i < static_cast<int>(turns.size()); i++) {
+        if (!context.empty()) context += " | ";
+        context += turns[i].first + ": " + turns[i].second.substr(0, 200);
+    }
+
+    return context;
+}
+
 std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                                               const std::string& user_text,
                                               json& messages) {
@@ -53,8 +78,13 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     if (memories.empty()) return "";
 
     double now = static_cast<double>(std::time(nullptr));
-    std::string context = format_memory_context(memories, now);
+    std::string context = format_memory_context_budgeted(memories, now, cfg_.max_inject_tokens);
     inject_memories(messages, context);
+
+    {
+        std::lock_guard<std::mutex> lock(debug_mutex_);
+        last_injection_ = {agent_id, user_text, context, static_cast<double>(std::time(nullptr))};
+    }
 
     std::cout << "[proxy] Injected " << memories.size() << " memories for agent='"
               << (agent_id.empty() ? "global" : agent_id) << "'\n";
@@ -114,6 +144,68 @@ void MemoryProxy::run() {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
+    // Admin API: list memories
+    svr.Get("/admin/memories", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string agent_id = req.has_param("agent_id") ? req.get_param_value("agent_id") : "";
+        int limit = 50;
+        int offset = 0;
+        if (req.has_param("limit")) limit = std::stoi(req.get_param_value("limit"));
+        if (req.has_param("offset")) offset = std::stoi(req.get_param_value("offset"));
+
+        auto memories = store_.list_memories(agent_id, limit, offset);
+
+        json result = json::array();
+        for (const auto& m : memories) {
+            result.push_back({
+                {"id", m.id},
+                {"agent_id", m.agent_id},
+                {"created_at", m.created_at},
+                {"user_text", m.user_text},
+                {"assist_text", m.assist_text},
+                {"access_count", m.access_count}
+            });
+        }
+        res.set_content(result.dump(2), "application/json");
+    });
+
+    // Admin API: delete a memory
+    svr.Delete(R"(/admin/memories/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        int64_t id = std::stoll(req.matches[1]);
+        bool removed = store_.remove(id);
+        if (removed) {
+            res.set_content(R"({"status":"deleted"})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"Memory not found"})", "application/json");
+        }
+    });
+
+    // Admin API: stats
+    svr.Get("/admin/stats", [this](const httplib::Request&, httplib::Response& res) {
+        auto stats = store_.get_stats();
+        json result = {
+            {"total_memories", stats.total_memories},
+            {"total_agents", stats.total_agents},
+            {"per_agent", json::object()}
+        };
+        for (const auto& [agent, count] : stats.per_agent_counts) {
+            result["per_agent"][agent] = count;
+        }
+        res.set_content(result.dump(2), "application/json");
+    });
+
+    // Admin API: last injection debug info
+    svr.Get("/admin/debug/last-injection", [this](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(debug_mutex_);
+        json result = {
+            {"last_agent_id", last_injection_.agent_id},
+            {"last_query", last_injection_.query},
+            {"last_injected_context", last_injection_.injected_context},
+            {"last_timestamp", last_injection_.timestamp}
+        };
+        res.set_content(result.dump(2), "application/json");
+    });
+
     svr.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
         json body;
         try {
@@ -165,7 +257,9 @@ void MemoryProxy::run() {
                 try {
                     auto resp_json = json::parse(backend_res->body);
                     std::string assist_text = resp_json["choices"][0]["message"]["content"].get<std::string>();
-                    enqueue_save(agent_id, user_text, assist_text);
+                    std::string conv_context = extract_conversation_context(messages);
+                    std::string save_user = conv_context.empty() ? user_text : conv_context;
+                    enqueue_save(agent_id, save_user, assist_text);
                 } catch (...) {}
             }
         } else {
@@ -174,10 +268,12 @@ void MemoryProxy::run() {
             std::string user_text_copy = user_text;
             std::string backend_url = cfg_.backend_url;
             std::string mod_body = modified_body;
+            std::string conv_context = extract_conversation_context(messages);
+            std::string save_user = conv_context.empty() ? user_text_copy : conv_context;
 
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, mod_body, backend_url, agent_id_copy, user_text_copy]
+                [this, mod_body, backend_url, agent_id_copy, save_user]
                 (size_t /*offset*/, httplib::DataSink& sink) -> bool {
                     httplib::Client backend(backend_url);
                     backend.set_read_timeout(300);
@@ -223,8 +319,8 @@ void MemoryProxy::run() {
                     );
 
                     // Save accumulated content to memory after streaming completes
-                    if (!accumulated_content.empty() && !user_text_copy.empty()) {
-                        enqueue_save(agent_id_copy, user_text_copy, accumulated_content);
+                    if (!accumulated_content.empty() && !save_user.empty()) {
+                        enqueue_save(agent_id_copy, save_user, accumulated_content);
                     }
 
                     sink.done();

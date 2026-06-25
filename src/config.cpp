@@ -17,7 +17,8 @@ static void print_usage() {
               << "  --decay-days <n>            Temporal decay half-life (default: 30)\n"
               << "  --dedup-threshold <f>       Deduplication cosine threshold (default: 0.92)\n"
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
-              << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n";
+              << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
+              << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048)\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -44,6 +45,8 @@ Config parse_args(int argc, char* argv[]) {
             cfg.max_memories_per_agent = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--gpu-layers") == 0 && i + 1 < argc) {
             cfg.gpu_layers = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--max-inject-tokens") == 0 && i + 1 < argc) {
+            cfg.max_inject_tokens = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage();
             std::exit(0);

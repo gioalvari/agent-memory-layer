@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <ctime>
 #include <iostream>
+#include <map>
 
 namespace memorylayer {
 
@@ -374,6 +375,61 @@ int64_t MemoryStore::find_duplicate(const std::vector<float>& user_emb, float th
     }
 
     return best_cos >= threshold ? best_id : -1;
+}
+
+std::vector<Memory> MemoryStore::list_memories(const std::string& agent_id, int limit, int offset) const {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    std::vector<Memory> results;
+
+    int skipped = 0;
+    for (auto it = cache_.rbegin(); it != cache_.rend() && static_cast<int>(results.size()) < limit; ++it) {
+        bool match = agent_id.empty() || it->agent_id == agent_id;
+        if (!match) continue;
+        if (skipped < offset) { skipped++; continue; }
+
+        Memory m;
+        m.id = it->id;
+        m.agent_id = it->agent_id;
+        m.created_at = it->created_at;
+        m.user_text = it->user_text;
+        m.assist_text = it->assist_text;
+        m.access_count = it->access_count;
+        results.push_back(std::move(m));
+    }
+    return results;
+}
+
+bool MemoryStore::remove(int64_t memory_id) {
+    const char* sql = "DELETE FROM memories WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_int64(stmt, 1, memory_id);
+    sqlite3_step(stmt);
+    int changes = sqlite3_changes(db_);
+    sqlite3_finalize(stmt);
+
+    if (changes > 0) {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        cache_.erase(std::remove_if(cache_.begin(), cache_.end(),
+            [memory_id](const CachedEntry& e) { return e.id == memory_id; }), cache_.end());
+    }
+    return changes > 0;
+}
+
+MemoryStore::Stats MemoryStore::get_stats() const {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    Stats stats;
+    stats.total_memories = static_cast<int>(cache_.size());
+
+    std::map<std::string, int> counts;
+    for (const auto& entry : cache_) {
+        std::string key = entry.agent_id.empty() ? "(global)" : entry.agent_id;
+        counts[key]++;
+    }
+    stats.total_agents = static_cast<int>(counts.size());
+    stats.per_agent_counts.assign(counts.begin(), counts.end());
+    return stats;
 }
 
 } // namespace memorylayer

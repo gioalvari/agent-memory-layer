@@ -51,6 +51,17 @@ private:
                                     nlohmann::json& messages);
 
     std::string extract_last_user_message(const nlohmann::json& messages) const;
+    std::string extract_conversation_context(const nlohmann::json& messages, int max_turns = 3) const;
+
+    // Debug: last injection info
+    struct DebugInjection {
+        std::string agent_id;
+        std::string query;
+        std::string injected_context;
+        double timestamp = 0;
+    };
+    DebugInjection last_injection_;
+    std::mutex debug_mutex_;
 };
 
 } // namespace memorylayer
