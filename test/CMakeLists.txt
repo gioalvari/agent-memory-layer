@@ -20,3 +20,27 @@ add_executable(test_scoring test_scoring.cpp ../src/memory_store.cpp)
 target_include_directories(test_scoring PRIVATE ../include ../deps)
 target_link_libraries(test_scoring PRIVATE sqlite3)
 add_test(NAME test_scoring COMMAND test_scoring)
+
+# Integration test: requires llama.cpp for EmbeddingWorker (even if model won't load)
+add_executable(test_integration test_integration.cpp
+    ../src/proxy.cpp
+    ../src/memory_store.cpp
+    ../src/embedding.cpp
+    ../src/injector.cpp
+    ../src/config.cpp
+)
+target_include_directories(test_integration PRIVATE
+    ../include
+    ../deps
+    ../deps/llama.cpp/include
+    ../deps/llama.cpp/common
+)
+target_link_libraries(test_integration PRIVATE llama sqlite3)
+if(APPLE)
+    target_link_libraries(test_integration PRIVATE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework MetalKit"
+    )
+endif()
+add_test(NAME test_integration COMMAND test_integration)
