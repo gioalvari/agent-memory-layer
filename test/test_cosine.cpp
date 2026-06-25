@@ -71,10 +71,35 @@ void test_dedup_finds_similar() {
     std::cout << "test_dedup_finds_similar PASSED\n";
 }
 
+// Verify that search() normalizes the query before dot product.
+// A query of {2.0, 0, ...} (same direction as {1.0, 0, ...} but norm=2)
+// must produce the same ranking as the unit query.
+void test_dot_product_normalizes_query() {
+    std::remove("test_dpnorm.sqlite");
+    memorylayer::MemoryStore store("test_dpnorm.sqlite");
+
+    auto emb_a = make_vec({1.0f, 0.0f, 0.0f});  // unit vector
+    auto emb_b = make_vec({0.0f, 1.0f, 0.0f});  // unit vector
+    store.insert("", "A", "a", emb_a, emb_a);
+    store.insert("", "B", "b", emb_b, emb_b);
+
+    // Non-unit query: same direction as A but norm = 2
+    auto q_scaled = make_vec({2.0f, 0.0f, 0.0f});
+    auto results = store.search(q_scaled, "", 2, 0.0f, 9999, 1.0f);
+    assert(results.size() == 2);
+    // A must still rank first (direction is identical after normalization)
+    assert(results[0].memory.user_text == "A");
+    assert(results[0].score > results[1].score);
+
+    std::remove("test_dpnorm.sqlite");
+    std::cout << "test_dot_product_normalizes_query PASSED\n";
+}
+
 int main() {
     test_search_returns_most_similar();
     test_dual_embedding_matches_assist();
     test_dedup_finds_similar();
+    test_dot_product_normalizes_query();
     std::cout << "All cosine tests PASSED\n";
     return 0;
 }

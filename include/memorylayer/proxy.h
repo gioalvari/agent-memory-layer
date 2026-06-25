@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <queue>
+#include <deque>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -59,14 +60,15 @@ private:
     // Returns false and sets 401 on res if admin token is configured and does not match.
     bool check_admin_auth(const httplib::Request& req, httplib::Response& res) const;
 
-    // Debug: last injection info
+    // Debug: injection history ring buffer (newest first, capped at kInjectionRingSize).
     struct DebugInjection {
         std::string agent_id;
         std::string query;
         std::string injected_context;
         double timestamp = 0;
     };
-    DebugInjection last_injection_;
+    static constexpr int kInjectionRingSize = 10;
+    std::deque<DebugInjection> injection_ring_;
     std::mutex debug_mutex_;
 };
 

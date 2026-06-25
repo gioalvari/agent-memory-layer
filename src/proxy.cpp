@@ -94,7 +94,11 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
     {
         std::lock_guard<std::mutex> lock(debug_mutex_);
-        last_injection_ = {agent_id, user_text, context, static_cast<double>(std::time(nullptr))};
+        injection_ring_.push_front({agent_id, user_text, context,
+                                    static_cast<double>(std::time(nullptr))});
+        if (static_cast<int>(injection_ring_.size()) > kInjectionRingSize) {
+            injection_ring_.pop_back();
+        }
     }
 
     LOG_INFO("proxy", "Injected " + std::to_string(memories.size()) + " memories for agent='" + (agent_id.empty() ? "global" : agent_id) + "'");
@@ -222,16 +226,19 @@ void MemoryProxy::run() {
         res.set_content(result.dump(2), "application/json");
     });
 
-    // Admin API: last injection debug info
+    // Admin API: injection history ring buffer (newest first, up to kInjectionRingSize entries)
     svr.Get("/admin/debug/last-injection", [this](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, res)) return;
         std::lock_guard<std::mutex> lock(debug_mutex_);
-        json result = {
-            {"last_agent_id", last_injection_.agent_id},
-            {"last_query", last_injection_.query},
-            {"last_injected_context", last_injection_.injected_context},
-            {"last_timestamp", last_injection_.timestamp}
-        };
+        json result = json::array();
+        for (const auto& inj : injection_ring_) {
+            result.push_back({
+                {"agent_id", inj.agent_id},
+                {"query", inj.query},
+                {"injected_context", inj.injected_context},
+                {"timestamp", inj.timestamp}
+            });
+        }
         res.set_content(result.dump(2), "application/json");
     });
 

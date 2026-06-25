@@ -36,7 +36,10 @@ private:
     void* model_ = nullptr;
     void* ctx_ = nullptr;
     int n_embd_ = 0;
+    int n_batch_max_ = 2048;
     bool ready_ = false;
+
+    static constexpr int kMaxBatchTexts = 8;  // max texts per llama_decode call
 
     std::thread worker_thread_;
     std::queue<EmbedJob> jobs_high_;   // Priority queue for search
