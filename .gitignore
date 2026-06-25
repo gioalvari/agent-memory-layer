@@ -1,0 +1,7 @@
+build/
+*.sqlite
+deps/llama.cpp/
+*.o
+*.dylib
+.DS_Store
+compile_commands.json

@@ -1,0 +1,53 @@
+#pragma once
+#include "memorylayer/config.h"
+#include "memorylayer/memory_store.h"
+#include "memorylayer/embedding.h"
+#include "json.hpp"
+#include <string>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+
+namespace memorylayer {
+
+struct SaveJob {
+    std::string agent_id;
+    std::string user_text;
+    std::string assist_text;
+};
+
+class MemoryProxy {
+public:
+    MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder);
+    ~MemoryProxy();
+
+    void run();
+    void shutdown();
+
+private:
+    const Config& cfg_;
+    MemoryStore& store_;
+    EmbeddingWorker& embedder_;
+
+    std::atomic<bool> stop_{false};
+
+    std::thread saver_thread_;
+    std::queue<SaveJob> save_queue_;
+    std::mutex save_mutex_;
+    std::condition_variable save_cv_;
+
+    void saver_loop();
+    void enqueue_save(const std::string& agent_id,
+                      const std::string& user_text,
+                      const std::string& assist_text);
+
+    std::string retrieve_and_inject(const std::string& agent_id,
+                                    const std::string& user_text,
+                                    nlohmann::json& messages);
+
+    std::string extract_last_user_message(const nlohmann::json& messages) const;
+};
+
+} // namespace memorylayer
