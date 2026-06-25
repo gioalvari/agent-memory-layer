@@ -19,6 +19,10 @@ MemoryProxy::~MemoryProxy() {
     shutdown();
 }
 
+void MemoryProxy::stop() {
+    if (svr_ptr_) svr_ptr_->stop();
+}
+
 void MemoryProxy::shutdown() {
     stop_ = true;
     save_cv_.notify_all();
@@ -63,6 +67,10 @@ void MemoryProxy::enqueue_save(const std::string& agent_id,
                                 const std::string& assist_text) {
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
+        if (save_queue_.size() >= 100) {
+            std::cerr << "[proxy] Save queue full, dropping oldest\n";
+            save_queue_.pop();
+        }
         save_queue_.push({agent_id, user_text, assist_text});
     }
     save_cv_.notify_one();
@@ -85,7 +93,7 @@ void MemoryProxy::saver_loop() {
         auto assist_emb = embedder_.embed(job.assist_text);
         if (user_emb.empty() || assist_emb.empty()) continue;
 
-        int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold);
+        int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
         if (dup_id > 0) {
             store_.touch(dup_id);
             std::cout << "[memory] Deduplicated: merged with memory #" << dup_id << "\n";
@@ -100,6 +108,7 @@ void MemoryProxy::saver_loop() {
 
 void MemoryProxy::run() {
     httplib::Server svr;
+    svr_ptr_ = &svr;
 
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(R"({"status":"ok"})", "application/json");
@@ -160,51 +169,76 @@ void MemoryProxy::run() {
                 } catch (...) {}
             }
         } else {
-            // Streaming: POST normally, buffer response, parse SSE for content, forward
-            auto backend_res = cli.Post("/v1/chat/completions",
-                                         modified_body, "application/json");
-            if (!backend_res) {
-                res.status = 502;
-                res.set_content(R"({"error":"Backend unreachable"})", "application/json");
-                return;
-            }
+            // TRUE streaming: forward SSE chunks in real-time via chunked response
+            std::string agent_id_copy = agent_id;
+            std::string user_text_copy = user_text;
+            std::string backend_url = cfg_.backend_url;
+            std::string mod_body = modified_body;
 
-            res.set_header("Content-Type", "text/event-stream");
-            res.set_header("Cache-Control", "no-cache");
-            res.status = backend_res->status;
-            res.set_content(backend_res->body, "text/event-stream");
+            res.set_chunked_content_provider(
+                "text/event-stream",
+                [this, mod_body, backend_url, agent_id_copy, user_text_copy]
+                (size_t /*offset*/, httplib::DataSink& sink) -> bool {
+                    httplib::Client backend(backend_url);
+                    backend.set_read_timeout(300);
+                    backend.set_connection_timeout(10);
 
-            // Parse SSE to extract assistant content for memory saving
-            if (backend_res->status == 200 && !user_text.empty()) {
-                std::string accumulated_content;
-                std::istringstream stream(backend_res->body);
-                std::string line;
-                while (std::getline(stream, line)) {
-                    if (line.size() > 6 && line.substr(0, 6) == "data: ") {
-                        std::string payload = line.substr(6);
-                        if (payload == "[DONE]") continue;
-                        try {
-                            auto j = json::parse(payload);
-                            if (j.contains("choices") && !j["choices"].empty()) {
-                                auto& delta = j["choices"][0]["delta"];
-                                if (delta.contains("content")) {
-                                    accumulated_content += delta["content"].get<std::string>();
+                    std::string accumulated_content;
+
+                    auto result = backend.Post(
+                        "/v1/chat/completions",
+                        mod_body.size(),
+                        [&mod_body](size_t offset, size_t length, httplib::DataSink& body_sink) -> bool {
+                            size_t remaining = mod_body.size() - offset;
+                            size_t to_write = std::min(length, remaining);
+                            body_sink.write(mod_body.data() + offset, to_write);
+                            return true;
+                        },
+                        "application/json",
+                        [&sink, &accumulated_content](const char* data, size_t len) -> bool {
+                            // Forward chunk to client in real-time
+                            sink.write(data, len);
+
+                            // Parse SSE lines to accumulate assistant content
+                            std::string chunk(data, len);
+                            std::istringstream stream(chunk);
+                            std::string line;
+                            while (std::getline(stream, line)) {
+                                if (line.size() > 6 && line.substr(0, 6) == "data: ") {
+                                    std::string payload = line.substr(6);
+                                    if (payload == "[DONE]") continue;
+                                    try {
+                                        auto j = nlohmann::json::parse(payload);
+                                        if (j.contains("choices") && !j["choices"].empty()) {
+                                            auto& delta = j["choices"][0]["delta"];
+                                            if (delta.contains("content")) {
+                                                accumulated_content += delta["content"].get<std::string>();
+                                            }
+                                        }
+                                    } catch (...) {}
                                 }
                             }
-                        } catch (...) {}
+                            return true;
+                        }
+                    );
+
+                    // Save accumulated content to memory after streaming completes
+                    if (!accumulated_content.empty() && !user_text_copy.empty()) {
+                        enqueue_save(agent_id_copy, user_text_copy, accumulated_content);
                     }
-                }
-                if (!accumulated_content.empty()) {
-                    enqueue_save(agent_id, user_text, accumulated_content);
-                }
-            }
+
+                    sink.done();
+                    return false;
+                },
+                [](bool) {}
+            );
         }
     });
 
     // Catch-all for other /v1/* endpoints
     svr.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) -> httplib::Server::HandlerResponse {
         // Only catch unhandled paths under /v1/
-        if (req.path.substr(0, 3) == "/v1" && req.path != "/v1/chat/completions") {
+        if (req.path.compare(0, 4, "/v1/") == 0 && req.path != "/v1/chat/completions") {
             httplib::Client cli(cfg_.backend_url);
             cli.set_read_timeout(60);
             httplib::Result result = (req.method == "POST")

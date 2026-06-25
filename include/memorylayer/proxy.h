@@ -3,6 +3,7 @@
 #include "memorylayer/memory_store.h"
 #include "memorylayer/embedding.h"
 #include "json.hpp"
+#include "httplib.h"
 #include <string>
 #include <thread>
 #include <queue>
@@ -24,6 +25,7 @@ public:
     ~MemoryProxy();
 
     void run();
+    void stop();
     void shutdown();
 
 private:
@@ -32,6 +34,7 @@ private:
     EmbeddingWorker& embedder_;
 
     std::atomic<bool> stop_{false};
+    httplib::Server* svr_ptr_ = nullptr;
 
     std::thread saver_thread_;
     std::queue<SaveJob> save_queue_;

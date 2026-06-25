@@ -4,13 +4,12 @@
 #include "memorylayer/proxy.h"
 #include <iostream>
 #include <csignal>
-#include <atomic>
 
-static std::atomic<bool> g_shutdown{false};
+static memorylayer::MemoryProxy* g_proxy = nullptr;
 
 static void signal_handler(int) {
-    g_shutdown = true;
     std::cout << "\n[main] Shutting down...\n";
+    if (g_proxy) g_proxy->stop();
 }
 
 int main(int argc, char* argv[]) {
@@ -32,10 +31,12 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[main] Embedding worker ready (dim=" << embedder.dimension() << ")\n";
 
+    memorylayer::MemoryProxy proxy(cfg, store, embedder);
+    g_proxy = &proxy;
+
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    memorylayer::MemoryProxy proxy(cfg, store, embedder);
     proxy.run();
 
     return 0;

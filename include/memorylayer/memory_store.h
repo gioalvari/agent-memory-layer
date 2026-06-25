@@ -3,6 +3,7 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include <mutex>
 
 struct sqlite3;
 
@@ -46,7 +47,7 @@ public:
                                      int decay_days,
                                      float agent_boost) const;
 
-    int64_t find_duplicate(const std::vector<float>& user_emb, float threshold) const;
+    int64_t find_duplicate(const std::vector<float>& user_emb, float threshold, const std::string& agent_id = "") const;
 
     void touch(int64_t memory_id);
     void evict(const std::string& agent_id);
@@ -57,6 +58,28 @@ private:
     int max_per_agent_;
     int max_global_;
     void init_schema();
+
+    // RAM vector cache for fast search
+    struct CachedEntry {
+        int64_t id;
+        std::string agent_id;
+        double created_at;
+        std::string user_text;
+        std::string assist_text;
+        int access_count;
+        int user_emb_offset;   // offset into embeddings_ vector
+        int assist_emb_offset; // offset into embeddings_ vector
+    };
+    mutable std::vector<CachedEntry> cache_;
+    mutable std::vector<float> embeddings_;  // flat array of all embeddings
+    int emb_dim_ = 0;
+    mutable std::mutex cache_mutex_;
+
+    void load_cache();
+    void add_to_cache(int64_t id, const std::string& agent_id, double created_at,
+                      const std::string& user_text, const std::string& assist_text,
+                      int access_count,
+                      const std::vector<float>& user_emb, const std::vector<float>& assist_emb);
 };
 
 } // namespace memorylayer
