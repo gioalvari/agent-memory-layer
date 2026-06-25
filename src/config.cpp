@@ -18,7 +18,8 @@ static void print_usage() {
               << "  --dedup-threshold <f>       Deduplication cosine threshold (default: 0.92)\n"
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
-              << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048)\n";
+              << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048)\n"
+              << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -47,6 +48,8 @@ Config parse_args(int argc, char* argv[]) {
             cfg.gpu_layers = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--max-inject-tokens") == 0 && i + 1 < argc) {
             cfg.max_inject_tokens = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--admin-token") == 0 && i + 1 < argc) {
+            cfg.admin_token = argv[++i];
         } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage();
             std::exit(0);

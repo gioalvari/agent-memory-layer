@@ -18,6 +18,7 @@ struct Config {
     float min_score_threshold = 0.3f;
     float agent_boost = 1.2f;
     int max_inject_tokens = 2048;  // Max tokens for injected memory context
+    std::string admin_token;       // If set, /admin/* requires Authorization: Bearer <token>
 };
 
 Config parse_args(int argc, char* argv[]);

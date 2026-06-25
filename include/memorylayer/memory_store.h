@@ -82,10 +82,12 @@ private:
     mutable std::vector<CachedEntry> cache_;
     mutable std::vector<float> embeddings_;  // flat array of all embeddings
     int emb_dim_ = 0;
+    mutable int holes_count_ = 0;   // entries erased from cache_ but not yet recompacted
     mutable std::mutex cache_mutex_;
 
     void load_cache();
     void recompact_embeddings();
+    bool should_recompact() const;  // caller must hold cache_mutex_
     void add_to_cache(int64_t id, const std::string& agent_id, double created_at,
                       const std::string& user_text, const std::string& assist_text,
                       int access_count,

@@ -217,10 +217,13 @@ void MemoryStore::evict(const std::string& agent_id) {
 
     int to_delete = current - limit;
 
-    // Get IDs that will be deleted
+    // LRU-weighted eviction: score = updated_at + 86400 * access_count
+    // Low-access, stale memories are evicted first; frequently-touched ones survive longer.
     const char* id_sql = agent_id.empty()
-        ? "SELECT id FROM memories WHERE agent_id IS NULL ORDER BY created_at ASC LIMIT ?"
-        : "SELECT id FROM memories WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?";
+        ? "SELECT id FROM memories WHERE agent_id IS NULL"
+          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?"
+        : "SELECT id FROM memories WHERE agent_id = ?"
+          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?";
 
     sqlite3_stmt* id_stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr);
@@ -241,10 +244,14 @@ void MemoryStore::evict(const std::string& agent_id) {
     }
     sqlite3_finalize(id_stmt);
 
-    // Delete from SQLite
+    // Delete from SQLite using the same weighted ordering
     const char* sql = agent_id.empty()
-        ? "DELETE FROM memories WHERE id IN (SELECT id FROM memories WHERE agent_id IS NULL ORDER BY created_at ASC LIMIT ?)"
-        : "DELETE FROM memories WHERE id IN (SELECT id FROM memories WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?)";
+        ? "DELETE FROM memories WHERE id IN"
+          " (SELECT id FROM memories WHERE agent_id IS NULL"
+          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?)"
+        : "DELETE FROM memories WHERE id IN"
+          " (SELECT id FROM memories WHERE agent_id = ?"
+          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?)";
 
     sqlite3_stmt* stmt = nullptr;
     rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -264,7 +271,7 @@ void MemoryStore::evict(const std::string& agent_id) {
     }
     sqlite3_finalize(stmt);
 
-    // Remove from cache
+    // Remove from cache and trigger lazy recompaction
     std::lock_guard<std::mutex> lock(cache_mutex_);
     cache_.erase(
         std::remove_if(cache_.begin(), cache_.end(),
@@ -272,7 +279,11 @@ void MemoryStore::evict(const std::string& agent_id) {
                 return std::find(ids_to_remove.begin(), ids_to_remove.end(), e.id) != ids_to_remove.end();
             }),
         cache_.end());
-    recompact_embeddings();  // Reclaim memory from evicted entries
+    holes_count_ += static_cast<int>(ids_to_remove.size());
+    if (should_recompact()) {
+        recompact_embeddings();
+        holes_count_ = 0;
+    }
 }
 
 static float cosine_similarity(const float* a, const float* b, int dim) {
@@ -426,7 +437,11 @@ bool MemoryStore::remove(int64_t memory_id) {
         std::lock_guard<std::mutex> lock(cache_mutex_);
         cache_.erase(std::remove_if(cache_.begin(), cache_.end(),
             [memory_id](const CachedEntry& e) { return e.id == memory_id; }), cache_.end());
-        recompact_embeddings();  // Reclaim memory from removed entry
+        holes_count_++;
+        if (should_recompact()) {
+            recompact_embeddings();
+            holes_count_ = 0;
+        }
     }
     return changes > 0;
 }
@@ -446,8 +461,18 @@ MemoryStore::Stats MemoryStore::get_stats() const {
     return stats;
 }
 
-void MemoryStore::recompact_embeddings() {
+bool MemoryStore::should_recompact() const {
     // Caller must hold cache_mutex_
+    if (emb_dim_ == 0 || holes_count_ == 0) return false;
+    // Trigger when orphaned data exceeds 4MB
+    size_t orphaned_bytes = static_cast<size_t>(holes_count_) * emb_dim_ * 2 * sizeof(float);
+    if (orphaned_bytes >= 4UL * 1024 * 1024) return true;
+    // Or when fragmentation exceeds 25% of live entries
+    if (!cache_.empty() && holes_count_ > static_cast<int>(cache_.size()) / 4) return true;
+    return false;
+}
+
+void MemoryStore::recompact_embeddings() {    // Caller must hold cache_mutex_
     if (cache_.empty()) {
         embeddings_.clear();
         return;

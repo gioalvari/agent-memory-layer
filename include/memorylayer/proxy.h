@@ -52,6 +52,8 @@ private:
 
     std::string extract_last_user_message(const nlohmann::json& messages) const;
     std::string extract_conversation_context(const nlohmann::json& messages, int max_turns = 3) const;
+    // Returns false and sets 401 on res if admin token is configured and does not match.
+    bool check_admin_auth(const httplib::Request& req, httplib::Response& res) const;
 
     // Debug: last injection info
     struct DebugInjection {

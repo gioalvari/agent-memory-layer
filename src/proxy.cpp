@@ -34,8 +34,17 @@ void MemoryProxy::shutdown() {
     if (saver_thread_.joinable()) saver_thread_.join();
 }
 
-std::string MemoryProxy::extract_last_user_message(const json& messages) const {
-    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+bool MemoryProxy::check_admin_auth(const httplib::Request& req, httplib::Response& res) const {
+    if (cfg_.admin_token.empty()) return true;  // Auth disabled
+    std::string auth = req.get_header_value("Authorization");
+    if (auth == "Bearer " + cfg_.admin_token) return true;
+    res.status = 401;
+    res.set_content(R"({"error":"Unauthorized — set Authorization: Bearer <admin-token>"})",
+                    "application/json");
+    return false;
+}
+
+std::string MemoryProxy::extract_last_user_message(const json& messages) const {    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
         if ((*it).value("role", "") == "user") {
             return (*it).value("content", "");
         }
@@ -146,6 +155,7 @@ void MemoryProxy::run() {
 
     // Admin API: list memories
     svr.Get("/admin/memories", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
         std::string agent_id = req.has_param("agent_id") ? req.get_param_value("agent_id") : "";
         int limit = 50;
         int offset = 0;
@@ -174,6 +184,7 @@ void MemoryProxy::run() {
 
     // Admin API: delete a memory
     svr.Delete(R"(/admin/memories/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
         int64_t id;
         try {
             id = std::stoll(req.matches[1]);
@@ -192,7 +203,8 @@ void MemoryProxy::run() {
     });
 
     // Admin API: stats
-    svr.Get("/admin/stats", [this](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/admin/stats", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
         auto stats = store_.get_stats();
         json result = {
             {"total_memories", stats.total_memories},
@@ -206,7 +218,8 @@ void MemoryProxy::run() {
     });
 
     // Admin API: last injection debug info
-    svr.Get("/admin/debug/last-injection", [this](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/admin/debug/last-injection", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
         std::lock_guard<std::mutex> lock(debug_mutex_);
         json result = {
             {"last_agent_id", last_injection_.agent_id},
