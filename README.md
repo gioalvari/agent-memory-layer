@@ -100,6 +100,59 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 
+## Running with Ollama
+
+The easiest real-world setup uses [Ollama](https://ollama.ai) as the LLM backend:
+
+```bash
+# Pull models (if not already done)
+ollama pull qwen2.5-coder:32b      # or any compatible model
+ollama pull mxbai-embed-large      # embedding model
+
+# The mxbai GGUF is already on disk after pull — find it:
+GGUF=$(ls ~/.ollama/models/blobs/ | while read f; do
+    xxd -l4 ~/.ollama/models/blobs/$f 2>/dev/null | grep -q "GGUF" \
+    && echo ~/.ollama/models/blobs/$f; done | head -1)
+
+# Or download nomic-embed-text directly (recommended, ~274MB):
+wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
+
+# Start Ollama (if not running)
+ollama serve &
+
+# Start memory-layer
+./build/memory-layer \
+    --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf \
+    --backend http://localhost:11434 \
+    --port 8800
+```
+
+### VS Code / Continue Integration
+
+Add to `.continuerc.json`:
+
+```json
+{
+  "models": [{
+    "title": "Memory-Aware Qwen",
+    "provider": "openai",
+    "model": "qwen2.5-coder:32b",
+    "apiBase": "http://localhost:8800/v1",
+    "apiKey": "not-needed",
+    "requestOptions": {
+      "headers": { "X-Agent-Id": "vscode-agent" }
+    }
+  }]
+}
+```
+
+### Cursor Integration
+
+Settings → Models → Add Custom Model:
+- **API Base**: `http://localhost:8800/v1`
+- **Model**: `qwen2.5-coder:32b`
+- **API Key**: `not-needed`
+
 ## Agent Integration
 
 ```python
@@ -217,43 +270,43 @@ If no relevant memories are found (score < 0.3), the request passes through **un
  └──────────────────────────────────────────────────────────────────┘
 ```
 
+### Batch Embedding Worker
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   HTTP Server (httplib)                    │
-│  /v1/chat/completions  │  /admin/*  │  /health  │ /v1/*  │
-└──────────┬─────────────┴────────────┴───────────┴────────┘
-           │
-     ┌─────▼──────┐     ┌──────────────────┐
-     │  Injector   │────▶│  Memory Store    │
-     │ (enriches   │     │  (SQLite + RAM   │
-     │  prompts)   │     │   vector cache)  │
-     └─────────────┘     └────────┬─────────┘
-                                  │
-     ┌─────────────┐     ┌───────▼──────────┐
-     │ Save Queue   │────▶│ Embedding Worker │
-     │ (background  │     │ (llama.cpp Metal │
-     │  thread)     │     │  priority queue) │
-     └─────────────┘     └──────────────────┘
+Queue HIGH   [search-q]
+Queue NORMAL [save-u1] [save-a1] [save-u2] [save-a2] …
+
+Worker drains ≤8 jobs per iteration (HIGH fully before NORMAL):
+
+  ┌── job1  job2  job3  job4 ──────────────────────────┐
+  │     │     │     │     │                             │
+  │     └─────┴─────┴─────┘                             │
+  │         one llama_decode()  (1 Metal dispatch)      │
+  │         ↓    ↓    ↓    ↓                            │
+  │       emb1 emb2 emb3 emb4   (L2-normalized)        │
+  └─────────────────────────────────────────────────────┘
+  If total_tokens > 2048 → graceful serial fallback.
 ```
 
 ### Components
 
-| Component | Responsibility |
-|-----------|---------------|
-| **MemoryProxy** | HTTP routing, SSE streaming, input validation, request forwarding |
-| **MemoryStore** | SQLite persistence, in-RAM vector cache, cosine search, eviction, dedup |
-| **EmbeddingWorker** | llama.cpp model loading, priority queue (HIGH=search, NORMAL=save), thread-safe |
-| **Injector** | Formats memory context block, respects token budget, inserts into messages |
-| **Config** | CLI parsing, validation, sensible defaults |
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **MemoryProxy** | `src/proxy.cpp` | HTTP routing, SSE passthrough, validation, injection ring buffer (10 entries) |
+| **MemoryStore** | `src/memory_store.cpp` | SQLite WAL, flat float cache, dot-product search, LRU eviction, dedup |
+| **EmbeddingWorker** | `src/embedding.cpp` | llama.cpp loader, priority queue (HIGH=search, NORMAL=save), batch decode (≤8/call) |
+| **Injector** | `src/injector.cpp` | Memory block formatting, token budget enforcement |
+| **Config** | `src/config.cpp` | CLI parsing, validation, defaults |
 
 ### Design Decisions
 
 - **Single-process, multi-thread**: proxy thread + embedding worker + background saver. No IPC complexity.
-- **In-RAM vector index**: all embeddings loaded at startup for O(n) brute-force cosine search. Fast up to ~10k memories; no ANN index needed at this scale.
-- **Priority embedding queue**: search requests (user-facing latency) preempt save requests (background). Prevents slow saves from blocking fast lookups.
-- **Batch embedding**: up to 8 texts are encoded in a single `llama_decode` when their total token count fits the context window (≤ 2048 tokens). Gives ~2–3× throughput improvement on bursts of save requests. Falls back to serial processing on overflow.
+- **In-RAM vector index**: flat `float[]` array, O(n) dot-product scan (unit vectors → cosine = dot). Fast up to ~10k memories; no ANN index needed at this scale.
+- **Priority embedding queue**: search requests (HIGH) drain fully before save requests (NORMAL). Prevents slow saves from blocking fast lookups.
+- **Batch decode**: ≤8 texts encoded in a single `llama_decode` call when total tokens ≤ 2048 — ~4× throughput on Apple Silicon vs serial. Graceful serial fallback on overflow.
 - **SQLite WAL mode**: concurrent reads + single writer. Embeddings stored as BLOBs, loaded into flat float arrays on startup.
-- **Graceful degradation**: if embedding model fails to load, proxy passes through all requests unmodified (no memories injected or saved).
+- **Injection ring buffer**: last 10 injection events stored as newest-first deque, inspectable at `/admin/debug/last-injection` without log parsing.
+- **Graceful degradation**: if embedding model fails to load, proxy passes through all requests unmodified.
 
 ## Technical Details
 
