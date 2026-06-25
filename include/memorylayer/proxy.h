@@ -34,7 +34,7 @@ private:
     EmbeddingWorker& embedder_;
 
     std::atomic<bool> stop_{false};
-    httplib::Server* svr_ptr_ = nullptr;
+    std::atomic<httplib::Server*> svr_ptr_{nullptr};
 
     std::thread saver_thread_;
     std::queue<SaveJob> save_queue_;

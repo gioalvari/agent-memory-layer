@@ -39,12 +39,13 @@ target_link_libraries(memory-layer PRIVATE
     sqlite3
 )
 
-# macOS frameworks for Metal
+# macOS frameworks for Metal + SIMD (Accelerate)
 if(APPLE)
     target_link_libraries(memory-layer PRIVATE
         "-framework Foundation"
         "-framework Metal"
         "-framework MetalKit"
+        "-framework Accelerate"
     )
 endif()
 

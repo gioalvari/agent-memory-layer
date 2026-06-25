@@ -24,7 +24,8 @@ MemoryProxy::~MemoryProxy() {
 }
 
 void MemoryProxy::stop() {
-    if (svr_ptr_) svr_ptr_->stop();
+    auto* svr = svr_ptr_.load();
+    if (svr) svr->stop();
 }
 
 void MemoryProxy::shutdown() {
@@ -137,7 +138,7 @@ void MemoryProxy::saver_loop() {
 
 void MemoryProxy::run() {
     httplib::Server svr;
-    svr_ptr_ = &svr;
+    svr_ptr_.store(&svr);
 
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content(R"({"status":"ok"})", "application/json");
@@ -277,7 +278,9 @@ void MemoryProxy::run() {
                     std::string conv_context = extract_conversation_context(messages);
                     std::string save_user = conv_context.empty() ? user_text : conv_context;
                     enqueue_save(agent_id, save_user, assist_text);
-                } catch (...) {}
+                } catch (const std::exception& e) {
+                    LOG_WARN("proxy", std::string("Failed to parse backend response for memory save: ") + e.what());
+                }
             }
         } else {
             // TRUE streaming: forward SSE chunks in real-time via chunked response
@@ -328,8 +331,9 @@ void MemoryProxy::run() {
                                                 accumulated_content += delta["content"].get<std::string>();
                                             }
                                         }
-                                    } catch (...) {}
-                                }
+                                    } catch (...) {
+                                        // Partial SSE chunks commonly fail JSON parse — skip silently
+                                    }                                }
                             }
                             return true;
                         }
@@ -375,6 +379,7 @@ void MemoryProxy::run() {
     LOG_INFO("proxy", "Memory injection: top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
 
     svr.listen("0.0.0.0", cfg_.port);
+    svr_ptr_.store(nullptr);  // Clear before svr goes out of scope (stop() safety)
 }
 
 } // namespace memorylayer

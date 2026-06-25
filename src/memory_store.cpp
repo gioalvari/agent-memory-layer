@@ -7,6 +7,9 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
 
 namespace memorylayer {
 
@@ -273,6 +276,14 @@ void MemoryStore::evict(const std::string& agent_id) {
 }
 
 static float cosine_similarity(const float* a, const float* b, int dim) {
+#ifdef __APPLE__
+    float dot = 0.0f, norm_a_sq = 0.0f, norm_b_sq = 0.0f;
+    vDSP_dotpr(a, 1, b, 1, &dot, static_cast<vDSP_Length>(dim));
+    vDSP_svesq(a, 1, &norm_a_sq, static_cast<vDSP_Length>(dim));
+    vDSP_svesq(b, 1, &norm_b_sq, static_cast<vDSP_Length>(dim));
+    float denom = std::sqrt(norm_a_sq) * std::sqrt(norm_b_sq);
+    return denom > 0.0f ? dot / denom : 0.0f;
+#else
     float dot = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
     for (int i = 0; i < dim; i++) {
         dot += a[i] * b[i];
@@ -281,6 +292,7 @@ static float cosine_similarity(const float* a, const float* b, int dim) {
     }
     float denom = std::sqrt(norm_a) * std::sqrt(norm_b);
     return denom > 0.0f ? dot / denom : 0.0f;
+#endif
 }
 
 std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_emb,
