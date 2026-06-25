@@ -55,3 +55,26 @@ if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(test)
 endif()
+
+# --- Benchmark tool ---
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/bench_embedding.cpp")
+    add_executable(bench_embedding
+        tools/bench_embedding.cpp
+        src/embedding.cpp
+    )
+    target_include_directories(bench_embedding PRIVATE
+        include
+        deps
+        deps/llama.cpp/include
+        deps/llama.cpp/common
+    )
+    target_link_libraries(bench_embedding PRIVATE llama sqlite3)
+    if(APPLE)
+        target_link_libraries(bench_embedding PRIVATE
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework Accelerate"
+        )
+    endif()
+endif()
