@@ -35,6 +35,7 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
     auto ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 2048;
     ctx_params.n_batch = 2048;
+    ctx_params.n_ubatch = 2048;  // must match n_batch; encoder asserts n_ubatch >= n_tokens
     ctx_params.embeddings = true;
 
     llama_context* ctx = llama_init_from_model(model, ctx_params);

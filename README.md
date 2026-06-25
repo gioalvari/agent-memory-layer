@@ -373,7 +373,16 @@ cd build && cmake .. && make -j8
 wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf
 ```
 
-Performance on M4 Pro: ~2ms per embedding (768-dim), ~50μs per cosine search over 1000 memories.
+Performance on M4 Pro with `nomic-embed-text-v1.5` (768-dim, Q4_K_M):
+
+| N texts | Serial ms/text | Batch ms/text | Speedup |
+|---------|---------------|--------------|---------|
+| 1       | 3.95          | 3.94         | 1.0×    |
+| 2       | 3.94          | 3.97         | 1.0×    |
+| 4       | 3.94          | 0.79         | **5.0×** |
+| 8       | 5.56          | 0.51         | **11×**  |
+
+Batch embedding (concurrent submission) yields up to **11× throughput improvement** at N=8 on M4 Pro. Single-text latency is ~4ms. Per-memory cosine search: ~50μs over 1000 memories.
 
 ## Requirements
 

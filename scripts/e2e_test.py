@@ -28,6 +28,11 @@ import urllib.error
 import urllib.request
 
 
+NOMIC_GGUF = os.path.expanduser(
+    "~/.ollama/models/blobs/"
+    "sha256-970aa74c0a90ef7482477cf803618e776e173c007bf957f635f1015bfcfef0e6"
+)
+# Alternative: mxbai-embed-large (requires llama.cpp >= b4500 for stability)
 MXBAI_GGUF = os.path.expanduser(
     "~/.ollama/models/blobs/"
     "sha256-819c2adf5ce6df2b6bd2ae4ca90d2a69f060afeb438d0c171db57daa02e39c3d"
@@ -76,7 +81,7 @@ def http_get(url: str, timeout: float = 10.0) -> object:
 
 
 def http_post(url: str, payload: dict, headers: dict,
-              timeout: float = 120.0) -> dict:
+              timeout: float = 240.0) -> dict:
     data = json.dumps(payload).encode()
     req  = urllib.request.Request(url, data=data, headers=headers)
     try:
@@ -92,7 +97,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--proxy-bin",   default="./build/memory-layer",
                     help="Path to compiled memory-layer binary")
-    ap.add_argument("--model-path",  default=MXBAI_GGUF,
+    ap.add_argument("--model-path",  default=NOMIC_GGUF,
                     help="Path to GGUF embedding model")
     ap.add_argument("--backend",     default="http://localhost:11434",
                     help="LLM backend URL (Ollama or llama-server)")
@@ -138,7 +143,7 @@ def main() -> int:
                 "--top-k",           "3",
                 "--gpu-layers",      "99",
             ],
-            stdout=subprocess.PIPE,
+            stdout=open("/tmp/memory-layer-e2e.log", "w"),
             stderr=subprocess.STDOUT,
         )
         print(f"  Proxy PID: {proc.pid}")
@@ -158,7 +163,11 @@ def main() -> int:
     finally:
         if proc:
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             if os.path.exists(db_path):
                 os.remove(db_path)
             print("\n=== Proxy stopped, temp DB cleaned up ===")
