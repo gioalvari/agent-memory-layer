@@ -196,7 +196,282 @@ void MemoryProxy::run() {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
-    // Admin API: list memories
+    // Admin dashboard UI
+    svr.Get("/admin/ui", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
+        static const std::string html = R"HTML(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Memory Layer — Dashboard</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+  header{background:#1a1d27;border-bottom:1px solid #2d3147;padding:16px 24px;display:flex;align-items:center;gap:12px}
+  header h1{font-size:1.2rem;font-weight:600;color:#a78bfa}
+  header span{font-size:.8rem;color:#64748b;margin-left:auto}
+  .main{padding:24px;max-width:1400px;margin:0 auto}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+  .card{background:#1a1d27;border:1px solid #2d3147;border-radius:10px;padding:20px}
+  .card .label{font-size:.75rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  .card .value{font-size:2rem;font-weight:700;color:#a78bfa}
+  .card .sub{font-size:.75rem;color:#64748b;margin-top:4px}
+  .row{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+  .panel{background:#1a1d27;border:1px solid #2d3147;border-radius:10px;padding:20px;flex:1;min-width:280px}
+  .panel h2{font-size:.9rem;font-weight:600;color:#94a3b8;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .agent-list{display:flex;flex-direction:column;gap:6px}
+  .agent-row{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#13151f;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:border .15s}
+  .agent-row:hover,.agent-row.active{border-color:#a78bfa}
+  .agent-name{font-size:.85rem;font-weight:500}
+  .agent-count{font-size:.75rem;background:#2d3147;padding:2px 8px;border-radius:10px;color:#94a3b8}
+  .toolbar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .toolbar input{background:#13151f;border:1px solid #2d3147;border-radius:6px;padding:6px 12px;color:#e2e8f0;font-size:.85rem;flex:1;min-width:200px;outline:none}
+  .toolbar input:focus{border-color:#a78bfa}
+  .btn{background:#2d3147;border:none;color:#e2e8f0;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.8rem;white-space:nowrap;transition:background .15s}
+  .btn:hover{background:#3d4267}
+  .btn.danger{background:#450a0a;color:#fca5a5}
+  .btn.danger:hover{background:#7f1d1d}
+  .btn.primary{background:#5b21b6;color:#fff}
+  .btn.primary:hover{background:#7c3aed}
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th{text-align:left;padding:8px 12px;color:#64748b;font-weight:500;border-bottom:1px solid #2d3147;position:sticky;top:0;background:#1a1d27}
+  td{padding:10px 12px;border-bottom:1px solid #1e2132;vertical-align:top;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  tr:hover td{background:#13151f}
+  .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:600}
+  .badge.hits{background:#14532d;color:#86efac}
+  .tbl-wrap{overflow-x:auto;max-height:520px;overflow-y:auto;border-radius:8px;border:1px solid #2d3147}
+  .detail-box{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+  .detail-inner{background:#1a1d27;border:1px solid #2d3147;border-radius:12px;max-width:680px;width:100%;max-height:80vh;overflow-y:auto;padding:24px}
+  .detail-inner h3{font-size:1rem;margin-bottom:16px;color:#a78bfa}
+  .detail-field{margin-bottom:12px}
+  .detail-field .lbl{font-size:.72rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .detail-field .val{background:#13151f;border-radius:6px;padding:10px 12px;font-size:.82rem;white-space:pre-wrap;word-break:break-word;line-height:1.5}
+  .inject-preview{background:#0c1a0c;border:1px solid #14532d;border-radius:8px;padding:12px;font-size:.8rem;color:#86efac;margin-top:8px;white-space:pre-wrap;max-height:200px;overflow-y:auto}
+  .empty{color:#64748b;text-align:center;padding:40px;font-size:.9rem}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid #2d3147;border-top-color:#a78bfa;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .toast{position:fixed;bottom:24px;right:24px;background:#14532d;color:#86efac;padding:10px 18px;border-radius:8px;font-size:.85rem;z-index:200;opacity:0;transition:opacity .3s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+  <h1>Agent Memory Layer</h1>
+  <span id="ts">—</span>
+</header>
+<div class="main">
+  <div class="cards">
+    <div class="card"><div class="label">Total Memories</div><div class="value" id="stat-total">—</div><div class="sub">across all agents</div></div>
+    <div class="card"><div class="label">Active Agents</div><div class="value" id="stat-agents">—</div></div>
+    <div class="card"><div class="label">Queue Drops</div><div class="value" id="stat-drops">—</div><div class="sub">save queue overflows</div></div>
+    <div class="card"><div class="label">Last Injection</div><div class="value" id="stat-inj" style="font-size:1.1rem;padding-top:6px">—</div></div>
+  </div>
+  <div class="row">
+    <div class="panel" style="max-width:260px;flex:0 0 260px">
+      <h2>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Agents
+      </h2>
+      <div class="agent-list" id="agent-list"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="panel" style="flex:1">
+      <h2>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Memories
+        <span id="mem-agent-label" style="color:#a78bfa;font-size:.8rem"></span>
+        <button class="btn" style="margin-left:auto" onclick="loadMemories()">↻ Refresh</button>
+      </h2>
+      <div class="toolbar">
+        <input type="text" id="search-box" placeholder="Filter by text…" oninput="filterTable()">
+        <select id="sort-sel" onchange="filterTable()" style="background:#13151f;border:1px solid #2d3147;border-radius:6px;padding:6px 10px;color:#e2e8f0;font-size:.85rem;outline:none">
+          <option value="created_desc">Newest first</option>
+          <option value="created_asc">Oldest first</option>
+          <option value="access_desc">Most accessed</option>
+        </select>
+        <button class="btn danger" onclick="purgeSelected()">Delete selected</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th><input type="checkbox" id="sel-all" onchange="toggleAll(this)"></th>
+            <th>ID</th><th>Agent</th><th>User message</th><th>Assistant reply</th><th>Accesses</th><th>Created</th><th></th>
+          </tr></thead>
+          <tbody id="mem-tbody"><tr><td colspan="8" class="empty">Select an agent or load all</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="panel" style="flex:1">
+      <h2>Last Injection Context</h2>
+      <div id="inj-detail" class="empty">No injection recorded yet</div>
+    </div>
+  </div>
+</div>
+
+<div class="detail-box" id="detail-modal" style="display:none" onclick="if(event.target===this)closeDetail()">
+  <div class="detail-inner">
+    <h3 id="detail-title">Memory detail</h3>
+    <div id="detail-body"></div>
+    <div style="margin-top:16px;display:flex;gap:8px">
+      <button class="btn danger" id="detail-del-btn">Delete</button>
+      <button class="btn" onclick="closeDetail()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let allMemories = [];
+let activeAgent = '';
+
+function toast(msg, ok=true){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.style.background=ok?'#14532d':'#450a0a';
+  t.style.color=ok?'#86efac':'#fca5a5';
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+function fmt(ts){
+  if(!ts)return '—';
+  const d=new Date(ts*1000);
+  return d.toLocaleString();
+}
+
+async function loadStats(){
+  try{
+    const r=await fetch('/admin/stats');
+    const d=await r.json();
+    document.getElementById('stat-total').textContent=d.total_memories??'—';
+    document.getElementById('stat-agents').textContent=d.total_agents??'—';
+    document.getElementById('stat-drops').textContent=d.save_queue_drops??0;
+    document.getElementById('ts').textContent='Updated '+new Date().toLocaleTimeString();
+  }catch(e){console.error(e)}
+}
+
+async function loadAgents(){
+  try{
+    const r=await fetch('/admin/agents');
+    const agents=await r.json();
+    const el=document.getElementById('agent-list');
+    if(!agents.length){el.innerHTML='<div class="empty">No agents yet</div>';return;}
+    el.innerHTML='<div class="agent-row'+(activeAgent===''?' active':'')+'" onclick="selectAgent(\'\')"><span class="agent-name">All agents</span><span class="agent-count">all</span></div>'
+      +agents.map(a=>`<div class="agent-row${activeAgent===a.agent_id?' active':''}" onclick="selectAgent('${a.agent_id.replace(/'/g,"\\'")}')">
+        <span class="agent-name">${a.agent_id||'<global>'}</span>
+        <span class="agent-count">${a.memory_count}</span>
+      </div>`).join('');
+  }catch(e){console.error(e)}
+}
+
+function selectAgent(id){
+  activeAgent=id;
+  document.getElementById('mem-agent-label').textContent=id?`— ${id}`:'';
+  loadAgents();
+  loadMemories();
+}
+
+async function loadMemories(){
+  const url='/admin/memories?limit=200'+(activeAgent?'&agent_id='+encodeURIComponent(activeAgent):'');
+  try{
+    const r=await fetch(url);
+    allMemories=await r.json();
+    filterTable();
+  }catch(e){console.error(e)}
+}
+
+function filterTable(){
+  const q=document.getElementById('search-box').value.toLowerCase();
+  const sort=document.getElementById('sort-sel').value;
+  let mems=[...allMemories];
+  if(q)mems=mems.filter(m=>(m.user_text+m.assist_text+m.agent_id).toLowerCase().includes(q));
+  if(sort==='created_asc')mems.sort((a,b)=>a.created_at-b.created_at);
+  else if(sort==='access_desc')mems.sort((a,b)=>b.access_count-a.access_count);
+  else mems.sort((a,b)=>b.created_at-a.created_at);
+  renderTable(mems);
+}
+
+function renderTable(mems){
+  const tb=document.getElementById('mem-tbody');
+  if(!mems.length){tb.innerHTML='<tr><td colspan="8" class="empty">No memories found</td></tr>';return;}
+  tb.innerHTML=mems.map(m=>`<tr>
+    <td><input type="checkbox" class="sel-cb" data-id="${m.id}"></td>
+    <td>${m.id}</td>
+    <td><span style="color:#a78bfa">${m.agent_id||'<global>'}</span></td>
+    <td style="max-width:240px" title="${esc(m.user_text)}">${esc(m.user_text).substring(0,80)}${m.user_text.length>80?'…':''}</td>
+    <td style="max-width:240px" title="${esc(m.assist_text)}">${esc(m.assist_text).substring(0,80)}${m.assist_text.length>80?'…':''}</td>
+    <td><span class="badge hits">${m.access_count}</span></td>
+    <td>${fmt(m.created_at)}</td>
+    <td><button class="btn" onclick='openDetail(${JSON.stringify(m)})'>View</button></td>
+  </tr>`).join('');
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function toggleAll(cb){document.querySelectorAll('.sel-cb').forEach(c=>c.checked=cb.checked);}
+
+async function purgeSelected(){
+  const ids=[...document.querySelectorAll('.sel-cb:checked')].map(c=>+c.dataset.id);
+  if(!ids.length){toast('Select memories first',false);return;}
+  if(!confirm(`Delete ${ids.length} memory/memories?`))return;
+  let ok=0;
+  for(const id of ids){
+    const r=await fetch('/admin/memories/'+id,{method:'DELETE'});
+    if(r.ok)ok++;
+  }
+  toast(`Deleted ${ok}/${ids.length}`);
+  loadMemories();loadStats();loadAgents();
+}
+
+function openDetail(m){
+  document.getElementById('detail-title').textContent=`Memory #${m.id}`;
+  document.getElementById('detail-body').innerHTML=`
+    <div class="detail-field"><div class="lbl">Agent</div><div class="val">${esc(m.agent_id||'<global>')}</div></div>
+    <div class="detail-field"><div class="lbl">Created</div><div class="val">${fmt(m.created_at)}</div></div>
+    <div class="detail-field"><div class="lbl">Access count</div><div class="val">${m.access_count}</div></div>
+    <div class="detail-field"><div class="lbl">User message</div><div class="val">${esc(m.user_text)}</div></div>
+    <div class="detail-field"><div class="lbl">Assistant reply</div><div class="val">${esc(m.assist_text)}</div></div>`;
+  document.getElementById('detail-del-btn').onclick=async()=>{
+    if(!confirm('Delete this memory?'))return;
+    const r=await fetch('/admin/memories/'+m.id,{method:'DELETE'});
+    if(r.ok){toast('Deleted');closeDetail();loadMemories();loadStats();loadAgents();}
+    else toast('Failed',false);
+  };
+  document.getElementById('detail-modal').style.display='flex';
+}
+function closeDetail(){document.getElementById('detail-modal').style.display='none';}
+
+async function loadLastInjection(){
+  try{
+    const r=await fetch('/admin/debug/last-injection');
+    const items=await r.json();
+    const el=document.getElementById('inj-detail');
+    if(!items.length){el.innerHTML='<div class="empty">No injection recorded yet</div>';return;}
+    const i=items[0];
+    el.innerHTML=`<div class="detail-field"><div class="lbl">Agent</div><div class="val">${esc(i.agent_id||'<global>')}</div></div>
+      <div class="detail-field"><div class="lbl">Query</div><div class="val">${esc(i.query)}</div></div>
+      <div class="detail-field"><div class="lbl">Injected context</div><div class="inject-preview">${esc(i.injected_context)}</div></div>
+      <div class="detail-field"><div class="lbl">Time</div><div class="val">${fmt(i.timestamp)}</div></div>`;
+    document.getElementById('stat-inj').textContent=i.agent_id||'<global>';
+  }catch(e){console.error(e)}
+}
+
+async function refresh(){
+  await Promise.all([loadStats(),loadAgents(),loadMemories(),loadLastInjection()]);
+}
+
+refresh();
+setInterval(refresh,10000);
+</script>
+</body>
+</html>)HTML";
+        res.set_content(html, "text/html; charset=utf-8");
+    });
+
     svr.Get("/admin/memories", [this](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, res)) return;
         std::string agent_id = req.has_param("agent_id") ? req.get_param_value("agent_id") : "";
