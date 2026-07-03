@@ -510,4 +510,50 @@ void MemoryStore::recompact_embeddings() {    // Caller must hold cache_mutex_
     embeddings_ = std::move(new_embeddings);
 }
 
+void MemoryStore::purge_expired(int ttl_days) {
+    if (ttl_days <= 0) return;
+
+    const double cutoff = static_cast<double>(std::time(nullptr)) - ttl_days * 86400.0;
+
+    // Collect IDs to remove first (avoid long-lock)
+    std::vector<int64_t> to_delete;
+    {
+        const char* sql = "SELECT id FROM memories WHERE created_at < ?;";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_double(stmt, 1, cutoff);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                to_delete.push_back(sqlite3_column_int64(stmt, 0));
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    if (to_delete.empty()) return;
+
+    // Delete from DB
+    const char* del_sql = "DELETE FROM memories WHERE id = ?;";
+    sqlite3_stmt* del_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, del_sql, -1, &del_stmt, nullptr) == SQLITE_OK) {
+        for (int64_t id : to_delete) {
+            sqlite3_bind_int64(del_stmt, 1, id);
+            sqlite3_step(del_stmt);
+            sqlite3_reset(del_stmt);
+        }
+        sqlite3_finalize(del_stmt);
+    }
+
+    // Invalidate RAM cache entries
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    for (auto& entry : cache_) {
+        for (int64_t id : to_delete) {
+            if (entry.id == id) {
+                entry.id = -1;  // mark as hole
+                ++holes_count_;
+                break;
+            }
+        }
+    }
+}
+
 } // namespace memorylayer

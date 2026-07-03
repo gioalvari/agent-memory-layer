@@ -19,6 +19,9 @@ struct Config {
     float agent_boost = 1.2f;
     int max_inject_tokens = 2048;  // Max tokens for injected memory context
     std::string admin_token;       // If set, /admin/* requires Authorization: Bearer <token>
+    int memory_ttl_days = 0;       // Delete memories older than N days (0 = disabled)
+    float similarity_threshold = 0.3f; // Alias for min_score_threshold (CLI: --similarity-threshold)
+    int max_context_tokens = 8192; // Max total context tokens; guards against injection overflow
 };
 
 Config parse_args(int argc, char* argv[]);

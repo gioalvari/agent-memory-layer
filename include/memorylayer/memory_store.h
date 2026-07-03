@@ -51,6 +51,7 @@ public:
 
     void touch(int64_t memory_id);
     void evict(const std::string& agent_id);
+    void purge_expired(int ttl_days);
     int count(const std::string& agent_id) const;
 
     std::vector<Memory> list_memories(const std::string& agent_id, int limit = 50, int offset = 0) const;

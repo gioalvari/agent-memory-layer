@@ -19,7 +19,10 @@ static void print_usage() {
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
               << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048)\n"
-              << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n";
+              << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
+              << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
+              << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
+              << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -50,6 +53,13 @@ Config parse_args(int argc, char* argv[]) {
             cfg.max_inject_tokens = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--admin-token") == 0 && i + 1 < argc) {
             cfg.admin_token = argv[++i];
+        } else if (strcmp(arg, "--memory-ttl-days") == 0 && i + 1 < argc) {
+            cfg.memory_ttl_days = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--similarity-threshold") == 0 && i + 1 < argc) {
+            cfg.similarity_threshold = static_cast<float>(std::atof(argv[++i]));
+            cfg.min_score_threshold  = cfg.similarity_threshold;
+        } else if (strcmp(arg, "--max-context-tokens") == 0 && i + 1 < argc) {
+            cfg.max_context_tokens = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage();
             std::exit(0);

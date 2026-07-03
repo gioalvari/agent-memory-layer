@@ -6,6 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <ctime>
+#include <chrono>
 #include <algorithm>
 #include <vector>
 #include <utility>
@@ -82,7 +83,20 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     auto query_emb = embedder_.embed(user_text, EmbedPriority::HIGH);
     if (query_emb.empty()) return "";
 
-    auto memories = store_.search(query_emb, agent_id, cfg_.top_k,
+    // Context overflow guard: estimate total tokens and reduce top_k if needed
+    int effective_top_k = cfg_.top_k;
+    if (cfg_.max_context_tokens > 0) {
+        // Rough estimate: 4 chars per token for user prompt
+        int user_token_est = static_cast<int>(user_text.size() / 4);
+        int budget = cfg_.max_context_tokens - user_token_est;
+        // Each memory is ~max_inject_tokens/top_k tokens; scale down if over budget
+        if (budget < cfg_.max_inject_tokens) {
+            int tokens_per_mem = std::max(1, cfg_.max_inject_tokens / std::max(1, cfg_.top_k));
+            effective_top_k = std::max(1, budget / tokens_per_mem);
+        }
+    }
+
+    auto memories = store_.search(query_emb, agent_id, effective_top_k,
                                    cfg_.min_score_threshold, cfg_.decay_days,
                                    cfg_.agent_boost);
 
@@ -123,32 +137,53 @@ void MemoryProxy::enqueue_save(const std::string& agent_id,
 }
 
 void MemoryProxy::saver_loop() {
+    auto last_purge = std::chrono::steady_clock::now();
     while (!stop_) {
         SaveJob job;
         {
             std::unique_lock<std::mutex> lock(save_mutex_);
-            save_cv_.wait(lock, [this] { return !save_queue_.empty() || stop_; });
+            save_cv_.wait_for(lock, std::chrono::seconds(30),
+                              [this] { return !save_queue_.empty() || stop_; });
             if (stop_ && save_queue_.empty()) return;
+            if (save_queue_.empty()) {
+                // Woke on timeout — only run housekeeping
+                goto housekeeping;
+            }
             job = std::move(save_queue_.front());
             save_queue_.pop();
         }
 
         if (!embedder_.is_ready()) continue;
 
-        // embed_text holds the bare user query; user_text holds the full context for display
-        const std::string& to_embed = job.embed_text.empty() ? job.user_text : job.embed_text;
-        auto user_emb = embedder_.embed(to_embed);
-        auto assist_emb = embedder_.embed(job.assist_text);
-        if (user_emb.empty() || assist_emb.empty()) continue;
+        {
+            const std::string& to_embed = job.embed_text.empty() ? job.user_text : job.embed_text;
+            auto user_emb = embedder_.embed(to_embed);
+            auto assist_emb = embedder_.embed(job.assist_text);
+            if (user_emb.empty() || assist_emb.empty()) continue;
 
-        int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
-        if (dup_id > 0) {
-            store_.touch(dup_id);
-            LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
-        } else {
-            store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
-            store_.evict(job.agent_id);
-            LOG_INFO("memory", "Saved new memory for agent='" + (job.agent_id.empty() ? "global" : job.agent_id) + "'");
+            int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
+            if (dup_id > 0) {
+                store_.touch(dup_id);
+                LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
+            } else {
+                store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
+                store_.evict(job.agent_id);
+                LOG_INFO("memory", "Saved new memory for agent='" +
+                         (job.agent_id.empty() ? "global" : job.agent_id) + "'");
+            }
+        }
+
+        housekeeping:
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::hours>(now - last_purge).count() >= 1) {
+                if (cfg_.memory_ttl_days > 0) {
+                    store_.purge_expired(cfg_.memory_ttl_days);
+                    LOG_INFO("memory", "Purged memories older than " +
+                             std::to_string(cfg_.memory_ttl_days) + " days");
+                }
+                last_purge = now;
+            }
         }
     }
 }
@@ -226,6 +261,17 @@ void MemoryProxy::run() {
         res.set_content(result.dump(2), "application/json");
     });
 
+    // Admin API: per-agent summary (id, count, last_active)
+    svr.Get("/admin/agents", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
+        auto stats = store_.get_stats();
+        json result = json::array();
+        for (const auto& [agent, count] : stats.per_agent_counts) {
+            result.push_back({{"agent_id", agent}, {"memory_count", count}});
+        }
+        res.set_content(result.dump(2), "application/json");
+    });
+
     // Admin API: injection history ring buffer (newest first, up to kInjectionRingSize entries)
     svr.Get("/admin/debug/last-injection", [this](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, res)) return;
@@ -243,6 +289,8 @@ void MemoryProxy::run() {
     });
 
     svr.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
+        auto t_start = std::chrono::steady_clock::now();
+
         // Body size limit: 1MB
         if (req.body.size() > 1024 * 1024) {
             res.status = 413;
@@ -295,6 +343,11 @@ void MemoryProxy::run() {
 
             res.status = backend_res->status;
             res.set_content(backend_res->body, backend_res->get_header_value("Content-Type"));
+            // Latency header: total proxy wall-time in milliseconds
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_start).count();
+            res.set_header("X-Memory-Layer-Latency-Ms", std::to_string(ms));
+            res.set_header("Access-Control-Expose-Headers", "X-Memory-Layer-Latency-Ms");
 
             if (backend_res->status == 200 && !user_text.empty()) {
                 try {
