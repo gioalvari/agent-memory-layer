@@ -23,9 +23,10 @@ struct Config {
     float similarity_threshold = 0.3f; // Alias for min_score_threshold (CLI: --similarity-threshold)
     int max_context_tokens = 8192; // Max total context tokens; guards against injection overflow
     // Where retrieved memories go: "system" appends them to the system prompt;
-    // "suffix" prepends them to the last user message so the system prompt and
-    // conversation history stay byte-identical (backend prefix/KV cache reuse).
+    // "suffix" prepends them to the last user message. "sticky" additionally
+    // re-injects prior cached blocks so the complete backend prompt stays stable.
     std::string inject_mode = "system";
+    int sticky_cache_entries = 4096;
 };
 
 Config parse_args(int argc, char* argv[]);

@@ -76,7 +76,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
-| `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message, keeping the system prompt and history byte-identical for backend prefix caching |
+| `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
+| `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
 
 ## Running with Ollama
 
@@ -206,16 +207,22 @@ previous request and stays in the backend's prefix/KV cache.
 ### Benchmark: injection position
 
 8 agents with a shared ~1,500-token system prompt, 4 turns each, proxy in front of
-[RadixForge](https://github.com/gioalvari/radixforge), Qwen2.5-0.5B on an M4 Pro
-(median time to first token on follow-up turns, 1,440 requests, 0 failures):
+[RadixForge](https://github.com/gioalvari/radixforge), Qwen2.5-0.5B on an M4 Pro.
+Three interleaved runs (target order rotated), 544 requests, 0 failures:
 
-| Concurrency | No proxy | `--inject-mode system` | `--inject-mode suffix` |
-|---:|---:|---:|---:|
-| 1 | 21.6 ms | 65.5 ms | **59.6 ms** |
-| 8 | 110.2 ms | 317.4 ms | **227.5 ms** |
+| Concurrency | Metric (follow-up turns) | `system` | `suffix` | `sticky` |
+|---:|---|---:|---:|---:|
+| 1 | TTFT p50 | 67.5 ms | 62.7 ms | **47.9 ms** |
+| 1 | TTFT p95 | 98.8 ms | 83.5 ms | **52.4 ms** |
+| 8 | TTFT p50 | 288.1 ms | **249.0 ms** | 256.5 ms |
+| 8 | TTFT p95 | 509.4 ms | 435.7 ms | **287.2 ms** |
+| 8 | full response p50 | 1,008 ms | 945 ms | **858 ms** |
+| — | tokens prefilled, turn 4 | 362 | 307 | **150** |
 
-Suffix mode cuts prefilled tokens by 22–25% on later turns. The remaining overhead
-is the memory block itself, which changes on every request. Method and full results:
+`sticky` keeps the prompt an exact extension of the previous turn, so only the new
+memory block, the new question and the previous answer are prefilled; the cost no
+longer grows with the conversation. Without the proxy the same turn prefills 54
+tokens, so the new block is still the remaining overhead. Method and full results:
 [local-llm-bench](https://github.com/gioalvari/local-llm-bench)
 (`results/qwen-0.5b-q4-memory-injection-m4-pro.md`).
 

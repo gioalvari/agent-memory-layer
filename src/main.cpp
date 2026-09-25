@@ -38,7 +38,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    proxy.run();
+    const bool ok = proxy.run();
 
-    return 0;
+    return ok ? 0 : 1;
 }

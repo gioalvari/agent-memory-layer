@@ -24,6 +24,7 @@ add_executable(memory-layer
     src/memory_store.cpp
     src/embedding.cpp
     src/injector.cpp
+    src/sticky.cpp
     src/proxy.cpp
 )
 

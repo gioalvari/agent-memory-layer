@@ -47,6 +47,11 @@ void test_inject_mode() {
     assert(memorylayer::parse_args(3, const_cast<char**>(d)).inject_mode == "system");
     const char* s[] = {"memory-layer", "--embedding-model", "m.gguf", "--inject-mode", "suffix"};
     assert(memorylayer::parse_args(5, const_cast<char**>(s)).inject_mode == "suffix");
+    const char* sticky[] = {"memory-layer", "--embedding-model", "m.gguf",
+                            "--inject-mode", "sticky", "--sticky-cache-entries", "12"};
+    auto sticky_cfg = memorylayer::parse_args(7, const_cast<char**>(sticky));
+    assert(sticky_cfg.inject_mode == "sticky");
+    assert(sticky_cfg.sticky_cache_entries == 12);
     std::cout << "test_inject_mode PASSED\n";
 }
 

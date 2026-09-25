@@ -113,6 +113,7 @@ void test_inject_suffix_without_user_falls_back() {
 
 void test_parse_inject_mode() {
     assert(memorylayer::parse_inject_mode("suffix") == memorylayer::InjectMode::Suffix);
+    assert(memorylayer::parse_inject_mode("sticky") == memorylayer::InjectMode::Sticky);
     assert(memorylayer::parse_inject_mode("system") == memorylayer::InjectMode::System);
     assert(memorylayer::parse_inject_mode("bogus") == memorylayer::InjectMode::System);
     std::cout << "test_parse_inject_mode PASSED\n";

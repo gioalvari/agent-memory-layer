@@ -16,7 +16,8 @@ using json = nlohmann::json;
 namespace memorylayer {
 
 MemoryProxy::MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder)
-    : cfg_(cfg), store_(store), embedder_(embedder) {
+    : cfg_(cfg), store_(store), embedder_(embedder),
+      sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
     saver_thread_ = std::thread(&MemoryProxy::saver_loop, this);
 }
 
@@ -76,14 +77,29 @@ std::string MemoryProxy::extract_conversation_context(const json& messages, int 
 }
 
 std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
-                                              const std::string& user_text,
-                                              json& messages) {
-    if (user_text.empty() || !embedder_.is_ready()) return "";
+                                               const std::string& user_text,
+                                               json& messages) {
+    const bool sticky_mode = cfg_.inject_mode == "sticky";
+    std::optional<std::size_t> last_user;
+    uint64_t last_key = 0;
+    StickyHistoryResult sticky_history;
+    if (sticky_mode) {
+        last_user = last_user_message_index(messages);
+        if (!last_user) return "";
+        last_key = sticky_message_key(agent_id, messages, *last_user);
+        sticky_history = apply_sticky_history(messages, agent_id, sticky_cache_);
+    }
+
+    if (user_text.empty() || !embedder_.is_ready()) {
+        if (sticky_mode) sticky_cache_.put(last_key, {});
+        return "";
+    }
 
     auto query_emb = embedder_.embed(user_text, EmbedPriority::HIGH);
     if (query_emb.empty()) {
         LOG_WARN("proxy", "Skipping memory retrieval because query embedding is empty for agent='" +
                  (agent_id.empty() ? "global" : agent_id) + "'");
+        if (sticky_mode) sticky_cache_.put(last_key, {});
         return "";
     }
 
@@ -100,15 +116,45 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         }
     }
 
-    auto memories = store_.search(query_emb, agent_id, effective_top_k,
-                                   cfg_.min_score_threshold, cfg_.decay_days,
-                                   cfg_.agent_boost);
+    const int search_top_k = effective_top_k +
+        static_cast<int>(sticky_history.shown_memory_ids.size());
+    auto memories = store_.search(query_emb, agent_id, search_top_k,
+                                    cfg_.min_score_threshold, cfg_.decay_days,
+                                    cfg_.agent_boost);
 
-    if (memories.empty()) return "";
+    if (sticky_mode) {
+        memories = filter_excluded_memories(memories, sticky_history.shown_memory_ids,
+                                            effective_top_k);
+    }
 
-    double now = static_cast<double>(std::time(nullptr));
-    std::string context = format_memory_context_budgeted(memories, now, cfg_.max_inject_tokens);
-    inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
+    if (memories.empty()) {
+        if (sticky_mode) {
+            sticky_cache_.put(last_key, {});
+            LOG_INFO("proxy", "Sticky injection: reused blocks=" +
+                     std::to_string(sticky_history.reused_blocks) + ", new memories=0");
+        }
+        return "";
+    }
+
+    std::string context;
+    std::vector<int64_t> injected_ids;
+    if (sticky_mode) {
+        const StickyFormattedContext formatted =
+            format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens);
+        context = formatted.block;
+        injected_ids = formatted.memory_ids;
+        const auto injected_last_user = last_user_message_index(messages);
+        if (injected_last_user) inject_sticky_block(messages, *injected_last_user, context);
+        sticky_cache_.put(last_key, {context, injected_ids});
+        LOG_INFO("proxy", "Sticky injection: reused blocks=" +
+                 std::to_string(sticky_history.reused_blocks) + ", new memories=" +
+                 std::to_string(injected_ids.size()));
+    } else {
+        context = format_memory_context_budgeted(memories,
+                                                 static_cast<double>(std::time(nullptr)),
+                                                 cfg_.max_inject_tokens);
+        inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
+    }
 
     {
         std::lock_guard<std::mutex> lock(debug_mutex_);
@@ -119,7 +165,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         }
     }
 
-    LOG_INFO("proxy", "Injected " + std::to_string(memories.size()) + " memories for agent='" + (agent_id.empty() ? "global" : agent_id) + "'");
+    LOG_INFO("proxy", "Injected " + std::to_string(sticky_mode ? injected_ids.size() : memories.size()) + " memories for agent='" + (agent_id.empty() ? "global" : agent_id) + "'");
 
     return context;
 }
@@ -192,7 +238,7 @@ void MemoryProxy::saver_loop() {
     }
 }
 
-void MemoryProxy::run() {
+bool MemoryProxy::run() {
     httplib::Server svr;
     svr_ptr_.store(&svr);
 
@@ -736,8 +782,15 @@ setInterval(refresh,10000);
     LOG_INFO("proxy", "Backend: " + cfg_.backend_url);
     LOG_INFO("proxy", "Memory injection: mode=" + cfg_.inject_mode + ", top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
 
-    svr.listen("0.0.0.0", cfg_.port);
+    const bool served = svr.listen("0.0.0.0", cfg_.port);
+    const bool stopping = svr_ptr_.load() == nullptr || stop_;
     svr_ptr_.store(nullptr);  // Clear before svr goes out of scope (stop() safety)
+    if (!served && !stopping) {
+        LOG_ERROR("proxy", "Failed to listen on port " + std::to_string(cfg_.port) +
+                  " (address in use?)");
+        return false;
+    }
+    return true;
 }
 
 } // namespace memorylayer

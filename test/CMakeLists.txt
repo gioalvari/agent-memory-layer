@@ -19,6 +19,10 @@ add_executable(test_config test_config.cpp ../src/config.cpp)
 target_include_directories(test_config PRIVATE ../include ../deps)
 add_test(NAME test_config COMMAND test_config)
 
+add_executable(test_sticky test_sticky.cpp ../src/sticky.cpp)
+target_include_directories(test_sticky PRIVATE ../include ../deps)
+add_test(NAME test_sticky COMMAND test_sticky)
+
 add_executable(test_cosine test_cosine.cpp ../src/memory_store.cpp)
 target_include_directories(test_cosine PRIVATE ../include ../deps)
 target_link_libraries(test_cosine PRIVATE sqlite3)
@@ -41,6 +45,7 @@ add_executable(test_integration test_integration.cpp
     ../src/memory_store.cpp
     ../src/embedding.cpp
     ../src/injector.cpp
+    ../src/sticky.cpp
     ../src/config.cpp
 )
 target_include_directories(test_integration PRIVATE
@@ -74,6 +79,6 @@ if(APPLE)
     )
 endif()
 
-foreach(t test_memory_store test_injector test_config test_cosine test_scoring test_integration)
+foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_integration)
     memorylayer_test_asserts(${t})
 endforeach()

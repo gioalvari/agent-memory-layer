@@ -14,9 +14,10 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched
+    Sticky,  // suffix placement; sticky history is handled by the proxy cache
 };
 
-// Parses "system" / "suffix"; anything else maps to System.
+// Parses "system" / "suffix" / "sticky"; anything else maps to System.
 InjectMode parse_inject_mode(const std::string& mode);
 
 void inject_memories(nlohmann::json& messages, const std::string& memory_context,

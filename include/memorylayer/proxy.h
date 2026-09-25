@@ -2,6 +2,7 @@
 #include "memorylayer/config.h"
 #include "memorylayer/memory_store.h"
 #include "memorylayer/embedding.h"
+#include "memorylayer/sticky.h"
 #include "json.hpp"
 #include "httplib.h"
 #include <string>
@@ -26,7 +27,8 @@ public:
     MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder);
     ~MemoryProxy();
 
-    void run();
+    // Serves until stop(); returns false if the listen socket could not be opened.
+    bool run();
     void stop();
     void shutdown();
 
@@ -50,6 +52,7 @@ private:
                       const std::string& embed_text = "");
 
     std::atomic<int64_t> save_drop_count_{0};
+    StickyCache sticky_cache_;
 
     std::string retrieve_and_inject(const std::string& agent_id,
                                     const std::string& user_text,

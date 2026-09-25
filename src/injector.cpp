@@ -74,14 +74,16 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
 }
 
 InjectMode parse_inject_mode(const std::string& mode) {
-    return mode == "suffix" ? InjectMode::Suffix : InjectMode::System;
+    if (mode == "suffix") return InjectMode::Suffix;
+    if (mode == "sticky") return InjectMode::Sticky;
+    return InjectMode::System;
 }
 
 void inject_memories(nlohmann::json& messages, const std::string& memory_context,
                      InjectMode mode) {
     if (memory_context.empty()) return;
 
-    if (mode == InjectMode::Suffix) {
+    if (mode == InjectMode::Suffix || mode == InjectMode::Sticky) {
         // Only the final user turn changes, so every token before it (system
         // prompt + history) is identical to the previous request and stays
         // reusable in the backend's prefix cache.
