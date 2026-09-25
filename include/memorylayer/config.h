@@ -22,6 +22,10 @@ struct Config {
     int memory_ttl_days = 0;       // Delete memories older than N days (0 = disabled)
     float similarity_threshold = 0.3f; // Alias for min_score_threshold (CLI: --similarity-threshold)
     int max_context_tokens = 8192; // Max total context tokens; guards against injection overflow
+    // Where retrieved memories go: "system" appends them to the system prompt;
+    // "suffix" prepends them to the last user message so the system prompt and
+    // conversation history stay byte-identical (backend prefix/KV cache reuse).
+    std::string inject_mode = "system";
 };
 
 Config parse_args(int argc, char* argv[]);

@@ -22,7 +22,9 @@ static void print_usage() {
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
-              << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n";
+              << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
+              << "  --inject-mode <mode>        system | suffix (default: system); suffix keeps the\n"
+              << "                              prompt prefix stable for backend KV-cache reuse\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -60,10 +62,18 @@ Config parse_args(int argc, char* argv[]) {
             cfg.min_score_threshold  = cfg.similarity_threshold;
         } else if (strcmp(arg, "--max-context-tokens") == 0 && i + 1 < argc) {
             cfg.max_context_tokens = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--inject-mode") == 0 && i + 1 < argc) {
+            cfg.inject_mode = argv[++i];
         } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage();
             std::exit(0);
         }
+    }
+
+    if (cfg.inject_mode != "system" && cfg.inject_mode != "suffix") {
+        std::cerr << "Error: --inject-mode must be 'system' or 'suffix'\n\n";
+        print_usage();
+        std::exit(1);
     }
 
     if (cfg.embedding_model_path.empty()) {

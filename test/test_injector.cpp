@@ -68,7 +68,61 @@ void test_no_injection_on_empty_context() {
     std::cout << "test_no_injection_on_empty_context PASSED\n";
 }
 
+void test_inject_suffix_keeps_prefix_stable() {
+    json messages = json::array({
+        {{"role", "system"}, {"content", "Shared prompt."}},
+        {{"role", "user"}, {"content", "First"}},
+        {{"role", "assistant"}, {"content", "Answer"}},
+        {{"role", "user"}, {"content", "Second"}}
+    });
+    json original = messages;
+
+    memorylayer::inject_memories(messages, "<memory context>\nm\n</memory context>",
+                                 memorylayer::InjectMode::Suffix);
+
+    assert(messages.size() == 4);
+    for (int i = 0; i < 3; i++) assert(messages[i] == original[i]);
+    std::string last = messages[3]["content"].get<std::string>();
+    assert(last.rfind("<memory context>", 0) == 0);
+    assert(last.size() >= 6 && last.substr(last.size() - 6) == "Second");
+    std::cout << "test_inject_suffix_keeps_prefix_stable PASSED\n";
+}
+
+void test_inject_suffix_structured_content() {
+    json messages = json::array({
+        {{"role", "system"}, {"content", "S"}},
+        {{"role", "user"}, {"content", json::array({{{"type", "text"}, {"text", "hi"}}})}}
+    });
+    memorylayer::inject_memories(messages, "<memory context>x</memory context>",
+                                 memorylayer::InjectMode::Suffix);
+    assert(messages.size() == 3);
+    assert(messages[0]["content"] == "S");
+    assert(messages[1]["role"] == "system");
+    assert(messages[2]["role"] == "user");
+    std::cout << "test_inject_suffix_structured_content PASSED\n";
+}
+
+void test_inject_suffix_without_user_falls_back() {
+    json messages = json::array({{{"role", "system"}, {"content", "S"}}});
+    memorylayer::inject_memories(messages, "<memory context>x</memory context>",
+                                 memorylayer::InjectMode::Suffix);
+    assert(messages.size() == 1);
+    assert(messages[0]["content"].get<std::string>().find("<memory context>") != std::string::npos);
+    std::cout << "test_inject_suffix_without_user_falls_back PASSED\n";
+}
+
+void test_parse_inject_mode() {
+    assert(memorylayer::parse_inject_mode("suffix") == memorylayer::InjectMode::Suffix);
+    assert(memorylayer::parse_inject_mode("system") == memorylayer::InjectMode::System);
+    assert(memorylayer::parse_inject_mode("bogus") == memorylayer::InjectMode::System);
+    std::cout << "test_parse_inject_mode PASSED\n";
+}
+
 int main() {
+    test_inject_suffix_keeps_prefix_stable();
+    test_inject_suffix_structured_content();
+    test_inject_suffix_without_user_falls_back();
+    test_parse_inject_mode();
     test_format_memory_line();
     test_format_memory_context_empty();
     test_inject_with_existing_system();

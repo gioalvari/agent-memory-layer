@@ -42,7 +42,16 @@ void test_custom_values() {
     std::cout << "test_custom_values PASSED\n";
 }
 
+void test_inject_mode() {
+    const char* d[] = {"memory-layer", "--embedding-model", "m.gguf"};
+    assert(memorylayer::parse_args(3, const_cast<char**>(d)).inject_mode == "system");
+    const char* s[] = {"memory-layer", "--embedding-model", "m.gguf", "--inject-mode", "suffix"};
+    assert(memorylayer::parse_args(5, const_cast<char**>(s)).inject_mode == "suffix");
+    std::cout << "test_inject_mode PASSED\n";
+}
+
 int main() {
+    test_inject_mode();
     test_defaults();
     test_custom_values();
     std::cout << "All config tests PASSED\n";

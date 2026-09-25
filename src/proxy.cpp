@@ -81,7 +81,11 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     if (user_text.empty() || !embedder_.is_ready()) return "";
 
     auto query_emb = embedder_.embed(user_text, EmbedPriority::HIGH);
-    if (query_emb.empty()) return "";
+    if (query_emb.empty()) {
+        LOG_WARN("proxy", "Skipping memory retrieval because query embedding is empty for agent='" +
+                 (agent_id.empty() ? "global" : agent_id) + "'");
+        return "";
+    }
 
     // Context overflow guard: estimate total tokens and reduce top_k if needed
     int effective_top_k = cfg_.top_k;
@@ -104,7 +108,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
     double now = static_cast<double>(std::time(nullptr));
     std::string context = format_memory_context_budgeted(memories, now, cfg_.max_inject_tokens);
-    inject_memories(messages, context);
+    inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
 
     {
         std::lock_guard<std::mutex> lock(debug_mutex_);
@@ -595,6 +599,9 @@ setInterval(refresh,10000);
 
         auto& messages = body["messages"];
         std::string user_text = extract_last_user_message(messages);
+        // Captured before injection: in suffix mode the memory block is written
+        // into the last user turn and must not be saved back as memory.
+        const std::string conv_context = extract_conversation_context(messages);
 
         retrieve_and_inject(agent_id, user_text, messages);
 
@@ -628,7 +635,6 @@ setInterval(refresh,10000);
                 try {
                     auto resp_json = json::parse(backend_res->body);
                     std::string assist_text = resp_json["choices"][0]["message"]["content"].get<std::string>();
-                    std::string conv_context = extract_conversation_context(messages);
                     std::string save_user = conv_context.empty() ? user_text : conv_context;
                     enqueue_save(agent_id, save_user, assist_text, user_text);
                 } catch (const std::exception& e) {
@@ -641,7 +647,6 @@ setInterval(refresh,10000);
             std::string user_text_copy = user_text;
             std::string backend_url = cfg_.backend_url;
             std::string mod_body = modified_body;
-            std::string conv_context = extract_conversation_context(messages);
             std::string save_user = conv_context.empty() ? user_text_copy : conv_context;
 
             res.set_chunked_content_provider(
@@ -729,7 +734,7 @@ setInterval(refresh,10000);
 
     LOG_INFO("proxy", "Listening on http://0.0.0.0:" + std::to_string(cfg_.port));
     LOG_INFO("proxy", "Backend: " + cfg_.backend_url);
-    LOG_INFO("proxy", "Memory injection: top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
+    LOG_INFO("proxy", "Memory injection: mode=" + cfg_.inject_mode + ", top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
 
     svr.listen("0.0.0.0", cfg_.port);
     svr_ptr_.store(nullptr);  // Clear before svr goes out of scope (stop() safety)

@@ -73,8 +73,34 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
     return oss.str();
 }
 
-void inject_memories(nlohmann::json& messages, const std::string& memory_context) {
+InjectMode parse_inject_mode(const std::string& mode) {
+    return mode == "suffix" ? InjectMode::Suffix : InjectMode::System;
+}
+
+void inject_memories(nlohmann::json& messages, const std::string& memory_context,
+                     InjectMode mode) {
     if (memory_context.empty()) return;
+
+    if (mode == InjectMode::Suffix) {
+        // Only the final user turn changes, so every token before it (system
+        // prompt + history) is identical to the previous request and stays
+        // reusable in the backend's prefix cache.
+        for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+            if ((*it).value("role", "") != "user") continue;
+            auto& content = (*it)["content"];
+            if (content.is_string()) {
+                content = memory_context + "\n\n" + content.get<std::string>();
+            } else {
+                // Structured (multi-part) content: add the block as its own
+                // system message right before the user turn.
+                auto pos = std::next(it).base();
+                nlohmann::json block = {{"role", "system"}, {"content", memory_context}};
+                messages.insert(pos, block);
+            }
+            return;
+        }
+        // No user message: fall through to system-prompt injection.
+    }
 
     if (!messages.empty() && messages[0].value("role", "") == "system") {
         std::string content = messages[0]["content"].get<std::string>();
