@@ -1,3 +1,8 @@
+# Tests rely on assert(); keep it active even in Release builds (-DNDEBUG).
+function(memorylayer_test_asserts target)
+    target_compile_options(${target} PRIVATE -UNDEBUG)
+endfunction()
+
 add_executable(test_memory_store test_memory_store.cpp ../src/memory_store.cpp)
 target_include_directories(test_memory_store PRIVATE ../include ../deps)
 target_link_libraries(test_memory_store PRIVATE sqlite3)
@@ -68,3 +73,7 @@ if(APPLE)
         "-framework MetalKit"   "-framework Accelerate"
     )
 endif()
+
+foreach(t test_memory_store test_injector test_config test_cosine test_scoring test_integration)
+    memorylayer_test_asserts(${t})
+endforeach()

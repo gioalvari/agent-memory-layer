@@ -165,8 +165,12 @@ void test_admin_debug_injection() {
     assert(res);
     assert(res->status == 200);
     auto body = json::parse(res->body);
-    assert(body.contains("last_agent_id"));
-    assert(body.contains("last_query"));
+    assert(body.is_array());  // injection ring, newest first
+    for (const auto& item : body) {
+        assert(item.contains("agent_id"));
+        assert(item.contains("query"));
+        assert(item.contains("injected_context"));
+    }
     std::cout << "test_admin_debug_injection PASSED\n";
 }
 
