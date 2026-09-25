@@ -56,14 +56,14 @@ endif()
 add_test(NAME test_integration COMMAND test_integration)
 
 # Benchmark: serial vs batch embedding throughput (NOT a ctest — run manually with a real model)
-add_executable(bench_embedding bench_embedding.cpp ../src/embedding.cpp)
-target_include_directories(bench_embedding PRIVATE
+add_executable(bench_embedding_batch bench_embedding.cpp ../src/embedding.cpp)
+target_include_directories(bench_embedding_batch PRIVATE
     ../include ../deps
     ../deps/llama.cpp/include ../deps/llama.cpp/common
 )
-target_link_libraries(bench_embedding PRIVATE llama)
+target_link_libraries(bench_embedding_batch PRIVATE llama)
 if(APPLE)
-    target_link_libraries(bench_embedding PRIVATE
+    target_link_libraries(bench_embedding_batch PRIVATE
         "-framework Foundation" "-framework Metal"
         "-framework MetalKit"   "-framework Accelerate"
     )

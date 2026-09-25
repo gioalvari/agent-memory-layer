@@ -1,5 +1,8 @@
 # Agent Memory Layer
 
+[![CI](https://github.com/gioalvari/agent-memory-layer/actions/workflows/ci.yml/badge.svg)](https://github.com/gioalvari/agent-memory-layer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A transparent HTTP proxy that gives LLM agents persistent, searchable memory across sessions — entirely local, zero cloud dependencies.
 
 Built with C++17, llama.cpp embeddings on Apple Silicon Metal, and SQLite vector storage.
@@ -38,48 +41,22 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 - 🔧 **Token budget control** — configurable max tokens for injected memory context
 - 📝 **Structured logging** — timestamped `[INFO/WARN/ERROR][component]` output
 
-## Running with Ollama
-
-```bash
-# 1. Start Ollama (provides OpenAI-compatible API on port 11434)
-ollama serve
-
-# 2. Pull a chat model
-ollama pull llama3.2
-
-# 3. Download embedding model
-wget -P ~/models \
-  https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf
-
-# 4. Start the memory proxy
-./build/memory-layer \
-  --embedding-model ~/models/nomic-embed-text-v1.5.Q8_0.gguf \
-  --backend http://localhost:11434 \
-  --port 8800
-
-# 5. Smoke test
-curl http://localhost:8800/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-Agent-Id: test-agent" \
-  -d '{"model":"llama3.2","messages":[{"role":"user","content":"My project uses CMake and C++17."}]}'
-```
-
 ## Quick Start
 
 ```bash
 # Clone with submodules (llama.cpp)
-git clone --recursive https://github.com/youruser/agent-memory-layer.git
+git clone --recursive https://github.com/gioalvari/agent-memory-layer.git
 cd agent-memory-layer
 
 # Build
-mkdir build && cd build
-cmake .. && make -j$(nproc)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(sysctl -n hw.ncpu)
 
 # Download embedding model
 wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf
 
 # Run (assumes LLM server on port 8080, e.g. llama-server)
-./memory-layer --embedding-model nomic-embed-text-v1.5.Q8_0.gguf
+./build/memory-layer --embedding-model nomic-embed-text-v1.5.Q8_0.gguf
 
 # Your agent just changes base_url:
 # client = OpenAI(base_url="http://localhost:8800/v1")
@@ -125,6 +102,12 @@ ollama serve &
     --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf \
     --backend http://localhost:11434 \
     --port 8800
+
+# Smoke test
+curl http://localhost:8800/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Id: test-agent" \
+  -d '{"model":"qwen2.5-coder:32b","messages":[{"role":"user","content":"My project uses CMake and C++17."}]}'
 ```
 
 ### VS Code / Continue Integration
@@ -181,6 +164,8 @@ Runtime introspection without stopping the server:
 |----------|--------|-------------|
 | `/health` | GET | Health check (returns `{"status":"ok"}`) |
 | `/admin/stats` | GET | Memory count, embedding queue depth, uptime |
+| `/admin/agents` | GET | Agent namespaces with memory counts |
+| `/admin/ui` | GET | Embedded web dashboard |
 | `/admin/memories` | GET | List memories (`?agent_id=X&limit=N&offset=M`) |
 | `/admin/memories/:id` | DELETE | Remove a specific memory by ID |
 | `/admin/debug/last-injection` | GET | JSON array of last 10 injections, newest first |
@@ -350,17 +335,16 @@ Agent-specific memories get a 1.2× scoring boost over cross-agent matches.
 ## Testing
 
 ```bash
-cd build && cmake .. && make -j8
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(sysctl -n hw.ncpu)
+ctest --test-dir build --output-on-failure
+```
 
-# Unit tests (25 tests)
-./test/test_config
-./test/test_memory_store
-./test/test_cosine
-./test/test_injector
-./test/test_scoring
+Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 
-# Integration tests (12 end-to-end HTTP tests)
-./test/test_integration
+```bash
+./build/bench_embedding <model.gguf>             # serial vs concurrent, N = 1..8
+./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
 **37 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
@@ -383,6 +367,15 @@ Performance on M4 Pro with `nomic-embed-text-v1.5` (768-dim, Q4_K_M):
 | 8       | 5.56          | 0.51         | **11×**  |
 
 Batch embedding (concurrent submission) yields up to **11× throughput improvement** at N=8 on M4 Pro. Single-text latency is ~4ms. Per-memory cosine search: ~50μs over 1000 memories.
+
+## Known Limitations
+
+- **macOS / Apple Silicon only**: Metal is forced on in CMake; Linux/CUDA builds are untested.
+- **OpenAI Chat Completions only**: memory is applied to `/v1/chat/completions`; other `/v1/*` paths (including Anthropic-style `/v1/messages`) are forwarded unmodified.
+- **Brute-force search**: O(n) scan over an in-RAM float cache; fine up to ~10k memories per process, no ANN index.
+- **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
+- **Prompt-prefix mutation**: memories are injected into the system prompt, which changes the prompt prefix on every request and defeats backend prefix/KV caching.
+- **No encryption at rest**: the SQLite database stores memories in plain text.
 
 ## Requirements
 
