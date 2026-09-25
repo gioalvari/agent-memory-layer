@@ -11,6 +11,7 @@
 #include "memorylayer/embedding.h"
 
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -32,6 +33,20 @@ static const std::vector<std::string> kTexts = {
     "Describe the architecture of a microservices system.",
     "What are the trade-offs between synchronous and asynchronous I/O?",
 };
+
+static double cosine_similarity(const std::vector<float>& lhs,
+                                const std::vector<float>& rhs) {
+    if (lhs.size() != rhs.size() || lhs.empty()) return 0.0;
+    double dot = 0.0;
+    double lhs_norm = 0.0;
+    double rhs_norm = 0.0;
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        dot += static_cast<double>(lhs[i]) * rhs[i];
+        lhs_norm += static_cast<double>(lhs[i]) * lhs[i];
+        rhs_norm += static_cast<double>(rhs[i]) * rhs[i];
+    }
+    return dot / std::sqrt(lhs_norm * rhs_norm);
+}
 
 static double measure_serial(EmbeddingWorker& w, int n, int runs) {
     double total = 0;
@@ -83,6 +98,33 @@ int main(int argc, char* argv[]) {
     // Warm up: two embeds to initialize Metal pipelines.
     worker.embed(kTexts[0], EmbedPriority::HIGH);
     worker.embed(kTexts[1], EmbedPriority::HIGH);
+
+    // Correctness check: compare independently decoded embeddings with one
+    // eight-request concurrent batch. This specifically validates sequence-id
+    // mapping in EmbeddingWorker's multi-text path.
+    std::vector<std::vector<float>> serial_embeddings;
+    serial_embeddings.reserve(kTexts.size());
+    for (const auto& text : kTexts) {
+        serial_embeddings.push_back(worker.embed(text, EmbedPriority::HIGH));
+    }
+    std::vector<std::future<std::vector<float>>> batch_futures;
+    batch_futures.reserve(kTexts.size());
+    for (size_t i = 0; i < kTexts.size(); ++i) {
+        batch_futures.push_back(std::async(std::launch::async, [&worker, i] {
+            return worker.embed(kTexts[i], EmbedPriority::HIGH);
+        }));
+    }
+    double min_cosine = 1.0;
+    for (size_t i = 0; i < batch_futures.size(); ++i) {
+        min_cosine = std::min(min_cosine,
+                              cosine_similarity(serial_embeddings[i], batch_futures[i].get()));
+    }
+    std::cout << "Batch correctness: minimum serial/batch cosine = "
+              << std::fixed << std::setprecision(6) << min_cosine << "\n";
+    if (min_cosine <= 0.999) {
+        std::cerr << "Batch correctness FAILED (expected cosine > 0.999)\n";
+        return 2;
+    }
 
     const int kRuns = 5;
 

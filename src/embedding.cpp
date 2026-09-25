@@ -3,7 +3,7 @@
 #include "llama.h"
 #include <cstring>
 #include <cmath>
-#include <iostream>
+#include <chrono>
 
 namespace memorylayer {
 
@@ -36,6 +36,10 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
     ctx_params.n_ctx = 2048;
     ctx_params.n_batch = 2048;
     ctx_params.n_ubatch = 2048;  // must match n_batch; encoder asserts n_ubatch >= n_tokens
+    // A batch assigns one independent sequence to each requested embedding.
+    // llama_context_default_params() only permits one sequence, which makes a
+    // multi-text batch invalid despite the batch's per-token sequence ids.
+    ctx_params.n_seq_max = kMaxBatchTexts;
     ctx_params.embeddings = true;
 
     llama_context* ctx = llama_init_from_model(model, ctx_params);
@@ -47,7 +51,7 @@ EmbeddingWorker::EmbeddingWorker(const std::string& model_path, int gpu_layers) 
     }
     ctx_ = ctx;
 
-    n_embd_ = llama_model_n_embd(model);
+    n_embd_ = llama_model_n_embd_out(model);
     n_batch_max_ = ctx_params.n_batch;
     ready_ = true;
 
@@ -87,6 +91,11 @@ std::vector<float> EmbeddingWorker::embed(const std::string& text, EmbedPriority
     }
     cv_.notify_one();
 
+    if (future.wait_for(kEmbedTimeout) != std::future_status::ready) {
+        LOG_WARN("embedding", "Embedding request timed out after " +
+                 std::to_string(kEmbedTimeout.count()) + "s");
+        return {};
+    }
     return future.get();
 }
 
@@ -94,6 +103,17 @@ void EmbeddingWorker::worker_loop() {
     auto* model = static_cast<llama_model*>(model_);
     auto* ctx = static_cast<llama_context*>(ctx_);
     const auto* vocab = llama_model_get_vocab(model);
+
+    const bool has_pooled_embeddings =
+        llama_pooling_type(ctx) != LLAMA_POOLING_TYPE_NONE;
+    const auto evaluate = [model, ctx](llama_batch& batch) {
+        // Embedding models with an encoder must use llama_encode(). llama.cpp
+        // currently redirects llama_decode() for them, but doing it directly
+        // avoids the noisy compatibility path and keeps this explicit.
+        return llama_model_has_encoder(model)
+            ? llama_encode(ctx, batch)
+            : llama_decode(ctx, batch);
+    };
 
     // Encode a single text and return a unit-normalized embedding (serial fallback).
     auto encode_single = [&](const std::string& text) -> std::vector<float> {
@@ -110,10 +130,11 @@ void EmbeddingWorker::worker_loop() {
             batch_add(batch, tokens[i], i, {0}, i == n - 1);
         }
         std::vector<float> result;
-        if (llama_decode(ctx, batch) == 0) {
+        if (evaluate(batch) == 0) {
             result.resize(n_embd_, 0.0f);
-            const float* emb = llama_get_embeddings_seq(ctx, 0);
-            if (!emb) emb = llama_get_embeddings_ith(ctx, n - 1);
+            const float* emb = has_pooled_embeddings
+                ? llama_get_embeddings_seq(ctx, 0)
+                : llama_get_embeddings_ith(ctx, n - 1);
             if (emb) {
                 std::memcpy(result.data(), emb, n_embd_ * sizeof(float));
                 float norm = 0.0f;
@@ -128,7 +149,7 @@ void EmbeddingWorker::worker_loop() {
         return result;
     };
 
-    while (!stop_) {
+    while (true) {
         std::vector<EmbedJob> jobs;
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -177,9 +198,11 @@ void EmbeddingWorker::worker_loop() {
 
         // All texts fit: build one multi-sequence batch and decode once.
         llama_memory_clear(llama_get_memory(ctx), true);
-        llama_batch batch = llama_batch_init(std::max(total_tokens, 1), 0, 1);
+        llama_batch batch = llama_batch_init(std::max(total_tokens, 1), 0,
+                                             kMaxBatchTexts);
 
         std::vector<int> job_seq(jobs.size(), -1);
+        std::vector<int> job_last_token(jobs.size(), -1);
         int seq_id = 0;
         for (int i = 0; i < static_cast<int>(jobs.size()); i++) {
             if (all_tokens[i].empty()) continue;
@@ -188,24 +211,31 @@ void EmbeddingWorker::worker_loop() {
             for (int t = 0; t < n; t++) {
                 batch_add(batch, all_tokens[i][t], t,
                           {static_cast<llama_seq_id>(seq_id)}, t == n - 1);
+                if (t == n - 1) job_last_token[i] = batch.n_tokens - 1;
             }
             seq_id++;
         }
 
-        bool decode_ok = (batch.n_tokens > 0) && (llama_decode(ctx, batch) == 0);
+        bool decode_ok = (batch.n_tokens > 0) && (evaluate(batch) == 0);
         for (int i = 0; i < static_cast<int>(jobs.size()); i++) {
-            if (!decode_ok || job_seq[i] < 0) {
+            if (!decode_ok || job_seq[i] < 0 || job_last_token[i] < 0) {
                 jobs[i].promise.set_value({});
                 continue;
             }
             std::vector<float> result(n_embd_, 0.0f);
-            const float* emb = llama_get_embeddings_seq(ctx, job_seq[i]);
+            const float* emb = has_pooled_embeddings
+                ? llama_get_embeddings_seq(ctx, job_seq[i])
+                : llama_get_embeddings_ith(ctx, job_last_token[i]);
             if (emb) {
                 std::memcpy(result.data(), emb, n_embd_ * sizeof(float));
                 float norm = 0.0f;
                 for (float v : result) norm += v * v;
                 norm = std::sqrt(norm);
                 if (norm > 0.0f) for (float& v : result) v /= norm;
+            } else {
+                result.clear();
+                LOG_WARN("embedding", "No embedding returned for batched sequence " +
+                         std::to_string(job_seq[i]));
             }
             jobs[i].promise.set_value(std::move(result));
         }
