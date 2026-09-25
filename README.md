@@ -34,7 +34,7 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 - ⚡ **Metal-accelerated embeddings** — local inference via llama.cpp, no network calls
 - 📡 **Real SSE streaming** — true chunked streaming passthrough with background content capture
 - 🎯 **Priority embedding queue** — search requests (HIGH) preempt background saves (NORMAL)
-- ⚡ **Batch embedding** — up to 8 texts encoded in a single `llama_decode`; ~2–3× throughput for save bursts
+- ⚡ **Batch embedding** — up to 8 texts encoded in a single `llama_decode`; ~3× throughput at 8 concurrent texts
 - 🔍 **Injection history ring** — last 10 memory injections inspectable via admin API (newest first)
 - 🛡️ **Input validation** — 1MB body limit, JSON schema checks, proper HTTP error codes
 - 📊 **Admin API** — runtime stats, memory listing, debug injection inspection
@@ -76,6 +76,7 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
+| `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message, keeping the system prompt and history byte-identical for backend prefix caching |
 
 ## Running with Ollama
 
@@ -198,6 +199,33 @@ Relevant past interactions (scored by relevance × recency):
 
 If no relevant memories are found (score < 0.3), the request passes through **unmodified**.
 
+With `--inject-mode suffix` the same block is instead prepended to the **last user
+message**, so everything before it (system prompt and history) is identical to the
+previous request and stays in the backend's prefix/KV cache.
+
+### Benchmark: injection position
+
+8 agents with a shared ~1,500-token system prompt, 4 turns each, proxy in front of
+[RadixForge](https://github.com/gioalvari/radixforge), Qwen2.5-0.5B on an M4 Pro
+(median time to first token on follow-up turns, 1,440 requests, 0 failures):
+
+| Concurrency | No proxy | `--inject-mode system` | `--inject-mode suffix` |
+|---:|---:|---:|---:|
+| 1 | 21.6 ms | 65.5 ms | **59.6 ms** |
+| 8 | 110.2 ms | 317.4 ms | **227.5 ms** |
+
+Suffix mode cuts prefilled tokens by 22–25% on later turns. The remaining overhead
+is the memory block itself, which changes on every request. Method and full results:
+[local-llm-bench](https://github.com/gioalvari/local-llm-bench)
+(`results/qwen-0.5b-q4-memory-injection-m4-pro.md`).
+
+Run the whole stack (proxy + backend) as one process with `scripts/stack.sh`:
+
+```bash
+./scripts/stack.sh 8800 suffix nomic-embed-text-v1.5.Q8_0.gguf -- \
+  llama-server -m model.gguf --port {bport}
+```
+
 ## Architecture
 
 ### Full Request Lifecycle
@@ -288,7 +316,7 @@ Worker drains ≤8 jobs per iteration (HIGH fully before NORMAL):
 - **Single-process, multi-thread**: proxy thread + embedding worker + background saver. No IPC complexity.
 - **In-RAM vector index**: flat `float[]` array, O(n) dot-product scan (unit vectors → cosine = dot). Fast up to ~10k memories; no ANN index needed at this scale.
 - **Priority embedding queue**: search requests (HIGH) drain fully before save requests (NORMAL). Prevents slow saves from blocking fast lookups.
-- **Batch decode**: ≤8 texts encoded in a single `llama_decode` call when total tokens ≤ 2048 — ~4× throughput on Apple Silicon vs serial. Graceful serial fallback on overflow.
+- **Batch decode**: ≤8 texts encoded in a single `llama_decode` call when total tokens ≤ 2048 — ~3× throughput at N=8 on an M4 Pro. Graceful serial fallback on overflow.
 - **SQLite WAL mode**: concurrent reads + single writer. Embeddings stored as BLOBs, loaded into flat float arrays on startup.
 - **Injection ring buffer**: last 10 injection events stored as newest-first deque, inspectable at `/admin/debug/last-injection` without log parsing.
 - **Graceful degradation**: if embedding model fails to load, proxy passes through all requests unmodified.
@@ -357,16 +385,17 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf
 ```
 
-Performance on M4 Pro with `nomic-embed-text-v1.5` (768-dim, Q4_K_M):
+Performance on M4 Pro with `nomic-embed-text` (768-dim, F16 GGUF from Ollama), measured with
+`./build/bench_embedding <model.gguf>` (batch output checked against serial: cosine = 1.000):
 
 | N texts | Serial ms/text | Batch ms/text | Speedup |
 |---------|---------------|--------------|---------|
-| 1       | 3.95          | 3.94         | 1.0×    |
-| 2       | 3.94          | 3.97         | 1.0×    |
-| 4       | 3.94          | 0.79         | **5.0×** |
-| 8       | 5.56          | 0.51         | **11×**  |
+| 1       | 3.97          | 3.90         | 1.0×    |
+| 2       | 3.95          | 2.76         | 1.4×    |
+| 4       | 3.92          | 2.01         | 2.0×    |
+| 8       | 3.93          | 1.30         | **3.0×** |
 
-Batch embedding (concurrent submission) yields up to **11× throughput improvement** at N=8 on M4 Pro. Single-text latency is ~4ms. Per-memory cosine search: ~50μs over 1000 memories.
+Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memories.
 
 ## Known Limitations
 
@@ -374,7 +403,7 @@ Batch embedding (concurrent submission) yields up to **11× throughput improveme
 - **OpenAI Chat Completions only**: memory is applied to `/v1/chat/completions`; other `/v1/*` paths (including Anthropic-style `/v1/messages`) are forwarded unmodified.
 - **Brute-force search**: O(n) scan over an in-RAM float cache; fine up to ~10k memories per process, no ANN index.
 - **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
-- **Prompt-prefix mutation**: memories are injected into the system prompt, which changes the prompt prefix on every request and defeats backend prefix/KV caching.
+- **Injected block is never cached**: retrieved memories change on every request, so the backend always recomputes them. With the default `--inject-mode system` the conversation history after the system prompt is recomputed as well; `--inject-mode suffix` avoids that (see benchmark below).
 - **No encryption at rest**: the SQLite database stores memories in plain text.
 
 ## Requirements
