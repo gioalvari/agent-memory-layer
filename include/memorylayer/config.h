@@ -1,4 +1,5 @@
 #pragma once
+#include "memorylayer/retrieval.h"
 #include <string>
 #include <cstdint>
 
@@ -11,6 +12,8 @@ struct Config {
     std::string db_path = "memories.sqlite";
     int top_k = 5;
     int decay_days = 30;
+    DecayMode decay_mode = DecayMode::Tiebreak;
+    float target_coverage = 0.0f;
     float dedup_threshold = 0.92f;
     int max_memories_per_agent = 1000;
     int max_memories_global = 5000;

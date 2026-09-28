@@ -2,6 +2,22 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <sys/wait.h>
+#include <unistd.h>
+
+template <std::size_t N>
+void assert_parse_fails(const char* (&argv)[N]) {
+    const pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        memorylayer::parse_args(static_cast<int>(N), const_cast<char**>(argv));
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    assert(WEXITSTATUS(status) == 1);
+}
 
 void test_defaults() {
     const char* argv[] = {"memory-layer", "--embedding-model", "test.gguf"};
@@ -12,8 +28,29 @@ void test_defaults() {
     assert(cfg.db_path == "memories.sqlite");
     assert(cfg.top_k == 5);
     assert(cfg.decay_days == 30);
+    assert(cfg.decay_mode == memorylayer::DecayMode::Tiebreak);
+    assert(cfg.target_coverage == 0.0f);
     assert(cfg.gpu_layers == 99);
     std::cout << "test_defaults PASSED\n";
+}
+
+void test_retrieval_options() {
+    const char* valid[] = {"memory-layer", "--embedding-model", "m.gguf",
+                           "--decay-mode", "legacy", "--target-coverage", "0.95"};
+    const auto cfg = memorylayer::parse_args(7, const_cast<char**>(valid));
+    assert(cfg.decay_mode == memorylayer::DecayMode::Legacy);
+    assert(cfg.target_coverage == 0.95f);
+
+    const char* invalid_mode[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                  "--decay-mode", "recent"};
+    assert_parse_fails(invalid_mode);
+    const char* invalid_coverage[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                      "--target-coverage", "0.85"};
+    assert_parse_fails(invalid_coverage);
+    const char* non_numeric_coverage[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                          "--target-coverage", "high"};
+    assert_parse_fails(non_numeric_coverage);
+    std::cout << "test_retrieval_options PASSED\n";
 }
 
 void test_custom_values() {
@@ -57,6 +94,7 @@ void test_inject_mode() {
 
 int main() {
     test_inject_mode();
+    test_retrieval_options();
     test_defaults();
     test_custom_values();
     std::cout << "All config tests PASSED\n";

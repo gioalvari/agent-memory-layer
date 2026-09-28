@@ -1,4 +1,5 @@
 #pragma once
+#include "memorylayer/retrieval.h"
 #include <string>
 #include <vector>
 #include <optional>
@@ -43,9 +44,10 @@ public:
     std::vector<ScoredMemory> search(const std::vector<float>& query_emb,
                                      const std::string& agent_id,
                                      int top_k,
-                                     float min_score,
-                                     int decay_days,
-                                     float agent_boost) const;
+                                      float min_score,
+                                      int decay_days,
+                                      float agent_boost,
+                                      DecayMode decay_mode = DecayMode::Tiebreak) const;
 
     int64_t find_duplicate(const std::vector<float>& user_emb, float threshold, const std::string& agent_id = "") const;
 

@@ -104,14 +104,17 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     }
 
     // Context overflow guard: estimate total tokens and reduce top_k if needed
-    int effective_top_k = cfg_.top_k;
+    int effective_top_k = cfg_.target_coverage > 0.0f
+        ? calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode)
+        : cfg_.top_k;
     if (cfg_.max_context_tokens > 0) {
         // Rough estimate: 4 chars per token for user prompt
         int user_token_est = static_cast<int>(user_text.size() / 4);
         int budget = cfg_.max_context_tokens - user_token_est;
         // Each memory is ~max_inject_tokens/top_k tokens; scale down if over budget
         if (budget < cfg_.max_inject_tokens) {
-            int tokens_per_mem = std::max(1, cfg_.max_inject_tokens / std::max(1, cfg_.top_k));
+            int tokens_per_mem = std::max(1, cfg_.max_inject_tokens /
+                                          std::max(1, effective_top_k));
             effective_top_k = std::max(1, budget / tokens_per_mem);
         }
     }
@@ -119,8 +122,8 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     const int search_top_k = effective_top_k +
         static_cast<int>(sticky_history.shown_memory_ids.size());
     auto memories = store_.search(query_emb, agent_id, search_top_k,
-                                    cfg_.min_score_threshold, cfg_.decay_days,
-                                    cfg_.agent_boost);
+                                  cfg_.min_score_threshold, cfg_.decay_days,
+                                  cfg_.agent_boost, cfg_.decay_mode);
 
     if (sticky_mode) {
         memories = filter_excluded_memories(memories, sticky_history.shown_memory_ids,
@@ -780,7 +783,20 @@ setInterval(refresh,10000);
 
     LOG_INFO("proxy", "Listening on http://0.0.0.0:" + std::to_string(cfg_.port));
     LOG_INFO("proxy", "Backend: " + cfg_.backend_url);
-    LOG_INFO("proxy", "Memory injection: mode=" + cfg_.inject_mode + ", top_k=" + std::to_string(cfg_.top_k) + ", decay_days=" + std::to_string(cfg_.decay_days));
+    const int calibrated_k = cfg_.target_coverage > 0.0f
+        ? calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode)
+        : cfg_.top_k;
+    const std::string decay_mode = cfg_.decay_mode == DecayMode::Tiebreak ? "tiebreak" : "legacy";
+    LOG_INFO("proxy", "Memory injection: mode=" + cfg_.inject_mode +
+             ", decay_mode=" + decay_mode + ", effective_k=" +
+             std::to_string(calibrated_k) + ", decay_days=" +
+             std::to_string(cfg_.decay_days));
+    if (cfg_.target_coverage > 0.0f) {
+        LOG_WARN("proxy", "target coverage assumes all " + std::to_string(calibrated_k) +
+                 " memories are injected; memories beyond --max-inject-tokens (" +
+                 std::to_string(cfg_.max_inject_tokens) +
+                 ") or --max-context-tokens are dropped and lower the actual coverage");
+    }
 
     const bool served = svr.listen("0.0.0.0", cfg_.port);
     const bool stopping = svr_ptr_.load() == nullptr || stop_;

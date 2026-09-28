@@ -39,6 +39,10 @@ if(APPLE)
 endif()
 add_test(NAME test_scoring COMMAND test_scoring)
 
+add_executable(test_retrieval test_retrieval.cpp)
+target_include_directories(test_retrieval PRIVATE ../include)
+add_test(NAME test_retrieval COMMAND test_retrieval)
+
 # Integration test: requires llama.cpp for EmbeddingWorker (even if model won't load)
 add_executable(test_integration test_integration.cpp
     ../src/proxy.cpp
@@ -79,6 +83,6 @@ if(APPLE)
     )
 endif()
 
-foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_integration)
+foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_retrieval test_integration)
     memorylayer_test_asserts(${t})
 endforeach()

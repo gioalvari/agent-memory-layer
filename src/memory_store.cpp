@@ -306,7 +306,8 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
                                                int top_k,
                                                float min_score,
                                                int decay_days,
-                                               float agent_boost) const {
+                                               float agent_boost,
+                                               DecayMode decay_mode) const {
     std::lock_guard<std::mutex> lock(cache_mutex_);
 
     // Normalize the query once so dot_product == cosine similarity against unit stored vectors.
@@ -319,7 +320,6 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
     }
 
     double now = now_unix();
-    double decay_hours_max = 24.0 * decay_days;
     int dim = static_cast<int>(q.size());
 
     std::vector<ScoredMemory> results;
@@ -340,16 +340,15 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
         float cos_assist = dot_product(q.data(), a_ptr, dim);
         float cos_max = std::max(cos_user, cos_assist);
 
-        double age_hours = (now - entry.created_at) / 3600.0;
-        float decay = std::max(0.5f, 1.0f - static_cast<float>(age_hours / decay_hours_max));
+        const double age_hours = (now - entry.created_at) / 3600.0;
+        const bool same_agent = !entry.agent_id.empty() && entry.agent_id == agent_id;
+        const float threshold_score = similarity_score(cos_max, same_agent, agent_boost);
+        const float score = rank_score(cos_max, age_hours, decay_days, same_agent,
+                                       agent_boost, decay_mode);
 
-        float score = cos_max * decay;
-
-        if (!entry.agent_id.empty() && entry.agent_id == agent_id) {
-            score *= agent_boost;
-        }
-
-        if (score >= min_score) {
+        // Keep threshold semantics on the cosine scale; tiebreak recency must
+        // not make an otherwise below-threshold memory eligible for injection.
+        if (threshold_score >= min_score) {
             Memory mem;
             mem.id = entry.id;
             mem.agent_id = entry.agent_id;
