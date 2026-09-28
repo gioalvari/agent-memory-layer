@@ -5,3 +5,6 @@ deps/llama.cpp/
 *.dylib
 .DS_Store
 compile_commands.json
+data/
+__pycache__/
+.venv/
