@@ -28,7 +28,7 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 ## Features
 
 - 🧠 **Dual-embedding retrieval** — matches against both user questions and assistant responses
-- ⏱️ **Temporal decay scoring** — recent memories rank higher, old ones gracefully fade
+- ⏱️ **Recency tie-break scoring** — semantic similarity leads; recency resolves near-ties
 - 🔄 **Auto-deduplication** — near-identical memories merge instead of accumulating
 - 🏷️ **Per-agent namespaces** — isolate or share memories across agents via `X-Agent-Id`
 - ⚡ **Metal-accelerated embeddings** — local inference via llama.cpp, no network calls
@@ -71,7 +71,9 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--port` | `8800` | Proxy listen port |
 | `--db` | `memories.sqlite` | SQLite database path |
 | `--top-k` | `5` | Max memories to inject per request |
-| `--decay-days` | `30` | Temporal decay half-life (days) |
+| `--decay-days` | `30` | Linear recency horizon (days; decay floors at 0.5) |
+| `--decay-mode` | `tiebreak` | `tiebreak`: preserve cosine ranking and use recency only for near-ties; `legacy`: multiply similarity by decay |
+| `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block |
@@ -269,10 +271,10 @@ Run the whole stack (proxy + backend) as one process with `scripts/stack.sh`:
  │              MemoryStore  ── shared (mutex-guarded)               │
  │  4. L2-normalize query_emb                                        │
  │  5. Scan in-RAM float cache:                                      │
- │       score = max(dot(q, user_emb), dot(q, assist_emb))          │
- │             × decay(age_hours, decay_days)                        │
- │             × agent_boost (1.2× if agent_id matches)             │
- │  6. Return top-K where score ≥ min_score (default 0.3)           │
+  │       similarity = max(dot(q, user_emb), dot(q, assist_emb))     │
+  │                    × agent_boost (1.2× if agent_id matches)      │
+  │       rank = similarity + 0.001 × decay(age, days) [tiebreak]     │
+  │  6. Return top-K where similarity ≥ min_score (default 0.3)      │
  └────────────────────────────┬─────────────────────────────────────┘
                               │ Vec<SearchResult>
  ┌────────────────────────────▼─────────────────────────────────────┐
@@ -333,13 +335,39 @@ Worker drains ≤8 jobs per iteration (HIGH fully before NORMAL):
 ### Scoring Formula
 
 ```
-cos_max   = max(cosine(query, user_emb), cosine(query, assist_emb))
-age_hours = (now - created_at) / 3600.0
-decay     = max(0.5, 1.0 - age_hours / (24 × decay_days))
-score     = cos_max × decay
-if agent matches:  score *= agent_boost (default 1.2)
-filter:            score >= min_score (default 0.3)
+cos_max    = max(cosine(query, user_emb), cosine(query, assist_emb))
+age_hours  = (now - created_at) / 3600.0
+recency    = max(0.5, 1.0 - age_hours / (24 × decay_days))
+similarity = cos_max × (agent matches ? agent_boost : 1.0)
+
+tiebreak (default): rank_score = similarity + 0.001 × recency
+legacy:             rank_score = similarity × recency
+filter (both):      similarity >= min_score (default 0.3)
 ```
+
+`ScoredMemory.score` is the rank score. The similarity threshold intentionally
+does not include the tiebreak term, keeping `--similarity-threshold` on a
+cosine-like scale.
+
+### Retrieval quality
+
+On 500 LongMemEval-S questions with `nomic-embed-text`, using recency only as a
+tiebreak improves evidence coverage while retaining semantic ordering:
+
+| Retrieval depth | Legacy decay | Tiebreak decay |
+|-----------------|-------------:|---------------:|
+| Top-5 | 75.2% | 85.6% |
+| Top-10 | 87.4% | 92.9% |
+
+Knowledge-update coverage improves from 65% to 96%; temporal questions are
+effectively unchanged (76% to 75%). `--target-coverage` selects a calibrated
+retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 19** for tiebreak scoring
+(legacy uses 7 / 16 / 29). See [the conformal retrieval study](docs/conformal-retrieval.md).
+The calibration uses synthetic session dates, guarantees only marginal
+at-least-one-evidence coverage, and is model-specific.
+The guarantee assumes all k memories are injected: raise `--max-inject-tokens`
+accordingly (in the study 8 memories averaged ~4,300 tokens, above the 2,048
+default), otherwise the budget drops the lowest-ranked ones and lowers coverage.
 
 ### Dual-Embedding Search
 
@@ -412,6 +440,7 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 - **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
 - **Injected block is never cached**: retrieved memories change on every request, so the backend always recomputes them. With the default `--inject-mode system` the conversation history after the system prompt is recomputed as well; `--inject-mode suffix` avoids that (see benchmark below).
 - **No encryption at rest**: the SQLite database stores memories in plain text.
+- **Score is not an abstention signal**: retrieval score has AUROC 0.56 for that use case.
 
 ## Requirements
 

@@ -13,8 +13,10 @@ static void print_usage() {
               << "  --backend <url>             LLM backend URL (default: http://localhost:8080)\n"
               << "  --port <n>                  Proxy listen port (default: 8800)\n"
               << "  --db <path>                 SQLite database path (default: memories.sqlite)\n"
-              << "  --top-k <n>                 Memories to inject (default: 5)\n"
-              << "  --decay-days <n>            Temporal decay half-life (default: 30)\n"
+               << "  --top-k <n>                 Memories to inject (default: 5)\n"
+               << "  --decay-days <n>            Temporal decay half-life (default: 30)\n"
+               << "  --decay-mode <mode>         tiebreak | legacy (default: tiebreak)\n"
+               << "  --target-coverage <p>       0.8 | 0.9 | 0.95 calibrated retrieval coverage\n"
               << "  --dedup-threshold <f>       Deduplication cosine threshold (default: 0.92)\n"
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
@@ -45,6 +47,26 @@ Config parse_args(int argc, char* argv[]) {
             cfg.top_k = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--decay-days") == 0 && i + 1 < argc) {
             cfg.decay_days = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--decay-mode") == 0 && i + 1 < argc) {
+            const std::string mode = argv[++i];
+            if (mode == "tiebreak") {
+                cfg.decay_mode = DecayMode::Tiebreak;
+            } else if (mode == "legacy") {
+                cfg.decay_mode = DecayMode::Legacy;
+            } else {
+                std::cerr << "Error: --decay-mode must be 'tiebreak' or 'legacy'\n\n";
+                print_usage();
+                std::exit(1);
+            }
+        } else if (strcmp(arg, "--target-coverage") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const char* value = argv[++i];
+            cfg.target_coverage = std::strtof(value, &end);
+            if (*value == '\0' || *end != '\0') {
+                std::cerr << "Error: --target-coverage must be 0.8, 0.9, or 0.95\n\n";
+                print_usage();
+                std::exit(1);
+            }
         } else if (strcmp(arg, "--dedup-threshold") == 0 && i + 1 < argc) {
             cfg.dedup_threshold = std::atof(argv[++i]);
         } else if (strcmp(arg, "--max-memories-per-agent") == 0 && i + 1 < argc) {
@@ -81,6 +103,18 @@ Config parse_args(int argc, char* argv[]) {
 
     if (cfg.sticky_cache_entries < 0) {
         std::cerr << "Error: --sticky-cache-entries must be non-negative\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (cfg.decay_days <= 0) {
+        std::cerr << "Error: --decay-days must be positive\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (!is_valid_target_coverage(cfg.target_coverage)) {
+        std::cerr << "Error: --target-coverage must be 0.8, 0.9, or 0.95\n\n";
         print_usage();
         std::exit(1);
     }
