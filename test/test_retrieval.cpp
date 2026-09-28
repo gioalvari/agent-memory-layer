@@ -60,10 +60,10 @@ void test_target_coverage_mapping() {
     using memorylayer::DecayMode;
     assert(memorylayer::calibrated_top_k(0.8f, DecayMode::Tiebreak) == 4);
     assert(memorylayer::calibrated_top_k(0.9f, DecayMode::Tiebreak) == 8);
-    assert(memorylayer::calibrated_top_k(0.95f, DecayMode::Tiebreak) == 19);
+    assert(memorylayer::calibrated_top_k(0.95f, DecayMode::Tiebreak) == 16);
     assert(memorylayer::calibrated_top_k(0.8f, DecayMode::Legacy) == 7);
-    assert(memorylayer::calibrated_top_k(0.9f, DecayMode::Legacy) == 16);
-    assert(memorylayer::calibrated_top_k(0.95f, DecayMode::Legacy) == 29);
+    assert(memorylayer::calibrated_top_k(0.9f, DecayMode::Legacy) == 15);
+    assert(memorylayer::calibrated_top_k(0.95f, DecayMode::Legacy) == 26);
     std::cout << "test_target_coverage_mapping PASSED\n";
 }
 

@@ -361,8 +361,9 @@ tiebreak improves evidence coverage while retaining semantic ordering:
 
 Knowledge-update coverage improves from 65% to 96%; temporal questions are
 effectively unchanged (76% to 75%). `--target-coverage` selects a calibrated
-retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 19** for tiebreak scoring
-(legacy uses 7 / 16 / 29). See [the conformal retrieval study](docs/conformal-retrieval.md).
+retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 16** for tiebreak scoring
+(legacy uses 7 / 15 / 26), each the finite-sample conformal rank quantile over
+all 467 labeled questions. See [the conformal retrieval study](docs/conformal-retrieval.md).
 The calibration uses synthetic session dates, guarantees only marginal
 at-least-one-evidence coverage, and is model-specific.
 The guarantee assumes all k memories are injected: raise `--max-inject-tokens`

@@ -31,10 +31,14 @@ inline float rank_score(float cos_max, double age_hours, int decay_days,
     return similarity + kRecencyTiebreakWeight * recency;
 }
 
+// Split-conformal rank quantiles, ceil((1 - alpha)(n + 1))-th best-evidence
+// rank, calibrated once on all 467 labeled LongMemEval-S questions
+// (research/conformal/src/conformal_retrieval/followup.py). Marginal
+// at-least-one-evidence coverage, specific to nomic-embed-text.
 inline int calibrated_top_k(float target_coverage, DecayMode mode) {
     if (target_coverage == 0.8f) return mode == DecayMode::Legacy ? 7 : 4;
-    if (target_coverage == 0.9f) return mode == DecayMode::Legacy ? 16 : 8;
-    if (target_coverage == 0.95f) return mode == DecayMode::Legacy ? 29 : 19;
+    if (target_coverage == 0.9f) return mode == DecayMode::Legacy ? 15 : 8;
+    if (target_coverage == 0.95f) return mode == DecayMode::Legacy ? 26 : 16;
     return 0;
 }
 
