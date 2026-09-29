@@ -77,7 +77,7 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
-| `--memory-line-chars` | `200` | Bytes kept from each user/assistant side of an injected memory |
+| `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
@@ -368,18 +368,30 @@ all 467 labeled questions. See [the conformal retrieval study](docs/conformal-re
 The calibration uses synthetic session dates, guarantees only marginal
 at-least-one-evidence coverage, and is model-specific.
 The guarantee assumes all k memories are injected. Each memory is one line
-whose user and assistant sides are cut to `--memory-line-chars` bytes (200 by
-default, at most 109 estimated tokens per line), so with `--target-coverage`
+whose user and assistant sides are cut to `--memory-line-chars` bytes (400 by
+default, at most 209 estimated tokens per line), so with `--target-coverage`
 and no explicit `--max-inject-tokens` the budget is raised to fit k worst-case
-lines (only legacy 0.95 exceeds the 2,048 default). An explicit budget is kept
+lines (tiebreak 0.95 and legacy 0.9 / 0.95 exceed the 2,048 default). An explicit budget is kept
 and logged if it can drop calibrated memories; a `--max-context-tokens` cut is
 logged per request.
 
 Coverage here means an evidence-labeled memory was retrieved, not that the
-model can read the answer: on 214 questions whose short answer appears
-verbatim in an evidence turn, the answer survives 200-byte truncation in 52%,
-and 80% / 92% at 400 / 800 bytes. Raise `--memory-line-chars` when answers
-sit deep in long turns; the study reports the depth x length trade-off.
+model can read the answer. On the 214 questions whose short answer appears
+verbatim in an evidence turn, Qwen2.5-7B-Instruct answers correctly with:
+
+| Memories x bytes per side | Correct | Prompt tokens |
+|---|---:|---:|
+| 5 x 200 (old default) | 40.2% | 548 |
+| 8 x 200 | 41.1% | 808 |
+| 16 x 200 | 40.2% | 1,498 |
+| 2 x 1,600 | 50.9% | 802 |
+| **5 x 400 (default)** | **53.7%** | 821 |
+| 8 x 400 | 55.1% | 1,236 |
+| 8 x 800 | 59.8% | 1,890 |
+| evidence only x 1,600 | 66.4% | 796 |
+
+Past a few memories, line length matters more than depth. 400 bytes is the
+longest default at which five worst-case lines fit the 2,048-token budget.
 
 ### Dual-Embedding Search
 

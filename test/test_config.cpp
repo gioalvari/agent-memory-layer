@@ -32,7 +32,10 @@ void test_defaults() {
     assert(cfg.target_coverage == 0.0f);
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
-    assert(cfg.memory_line_chars == 200);
+    assert(cfg.memory_line_chars == 400);
+    // Default top-k memories at the default line length fit the default budget.
+    assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
+           cfg.max_inject_tokens);
     std::cout << "test_defaults PASSED\n";
 }
 
@@ -45,13 +48,18 @@ void test_retrieval_options() {
 
     // Without an explicit budget, legacy 0.95 (k=26) raises the 2048 default.
     assert(!cfg.max_inject_tokens_explicit);
-    assert(cfg.max_inject_tokens == memorylayer::required_inject_tokens(26, 200));
+    assert(cfg.max_inject_tokens == memorylayer::required_inject_tokens(26, 400));
     assert(cfg.max_inject_tokens > 2048);
 
     const char* default_fits[] = {"memory-layer", "--embedding-model", "m.gguf",
                                   "--target-coverage", "0.9"};
     const auto fits = memorylayer::parse_args(5, const_cast<char**>(default_fits));
     assert(fits.max_inject_tokens == 2048);
+
+    const char* high_target[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                 "--target-coverage", "0.95"};
+    const auto high = memorylayer::parse_args(5, const_cast<char**>(high_target));
+    assert(high.max_inject_tokens == memorylayer::required_inject_tokens(16, 400));
 
     const char* long_lines[] = {"memory-layer", "--embedding-model", "m.gguf",
                                 "--target-coverage", "0.9", "--memory-line-chars", "800"};

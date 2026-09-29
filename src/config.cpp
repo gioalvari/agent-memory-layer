@@ -23,7 +23,7 @@ static void print_usage() {
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
               << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048;\n"
               << "                              raised to fit all k memories with --target-coverage)\n"
-              << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 200)\n"
+              << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 400)\n"
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
