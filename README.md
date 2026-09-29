@@ -76,7 +76,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
-| `--max-inject-tokens` | `2048` | Token budget for injected memory block |
+| `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
+| `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
@@ -361,13 +362,36 @@ tiebreak improves evidence coverage while retaining semantic ordering:
 
 Knowledge-update coverage improves from 65% to 96%; temporal questions are
 effectively unchanged (76% to 75%). `--target-coverage` selects a calibrated
-retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 19** for tiebreak scoring
-(legacy uses 7 / 16 / 29). See [the conformal retrieval study](docs/conformal-retrieval.md).
+retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 16** for tiebreak scoring
+(legacy uses 7 / 15 / 26), each the finite-sample conformal rank quantile over
+all 467 labeled questions. See [the conformal retrieval study](docs/conformal-retrieval.md).
 The calibration uses synthetic session dates, guarantees only marginal
 at-least-one-evidence coverage, and is model-specific.
-The guarantee assumes all k memories are injected: raise `--max-inject-tokens`
-accordingly (in the study 8 memories averaged ~4,300 tokens, above the 2,048
-default), otherwise the budget drops the lowest-ranked ones and lowers coverage.
+The guarantee assumes all k memories are injected. Each memory is one line
+whose user and assistant sides are cut to `--memory-line-chars` bytes (400 by
+default, at most 209 estimated tokens per line), so with `--target-coverage`
+and no explicit `--max-inject-tokens` the budget is raised to fit k worst-case
+lines (tiebreak 0.95 and legacy 0.9 / 0.95 exceed the 2,048 default). An explicit budget is kept
+and logged if it can drop calibrated memories; a `--max-context-tokens` cut is
+logged per request.
+
+Coverage here means an evidence-labeled memory was retrieved, not that the
+model can read the answer. On the 214 questions whose short answer appears
+verbatim in an evidence turn, Qwen2.5-7B-Instruct answers correctly with:
+
+| Memories x bytes per side | Correct | Prompt tokens |
+|---|---:|---:|
+| 5 x 200 (old default) | 40.2% | 548 |
+| 8 x 200 | 41.1% | 808 |
+| 16 x 200 | 40.2% | 1,498 |
+| 2 x 1,600 | 50.9% | 802 |
+| **5 x 400 (default)** | **53.7%** | 821 |
+| 8 x 400 | 55.1% | 1,236 |
+| 8 x 800 | 59.8% | 1,890 |
+| evidence only x 1,600 | 66.4% | 796 |
+
+Past a few memories, line length matters more than depth. 400 bytes is the
+longest default at which five worst-case lines fit the 2,048-token budget.
 
 ### Dual-Embedding Search
 

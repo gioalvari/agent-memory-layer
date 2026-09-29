@@ -74,6 +74,7 @@ struct StickyFormattedContext {
 // Uses UTC calendar dates rather than relative times, keeping a cached block
 // byte-identical when it is re-injected in a later request.
 StickyFormattedContext format_sticky_memory_context_budgeted(
-    const std::vector<ScoredMemory>& memories, int max_tokens);
+    const std::vector<ScoredMemory>& memories, int max_tokens,
+    int line_chars = kDefaultMemoryLineChars);
 
 } // namespace memorylayer

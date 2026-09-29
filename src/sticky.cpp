@@ -34,7 +34,7 @@ std::string utc_date(double timestamp) {
     return output.str();
 }
 
-std::string sticky_memory_line(const ScoredMemory& memory, int max_chars = 200) {
+std::string sticky_memory_line(const ScoredMemory& memory, int max_chars) {
     return "- [" + utc_date(memory.memory.created_at) + "] " +
            truncate(memory.memory.user_text, max_chars) + " Response: " +
            truncate(memory.memory.assist_text, max_chars);
@@ -163,12 +163,12 @@ std::vector<ScoredMemory> filter_excluded_memories(
 }
 
 StickyFormattedContext format_sticky_memory_context_budgeted(
-    const std::vector<ScoredMemory>& memories, int max_tokens) {
+    const std::vector<ScoredMemory>& memories, int max_tokens, int line_chars) {
     StickyFormattedContext result;
     if (memories.empty()) return result;
 
-    const std::string header = "<memory context>\nRelevant past interactions:\n";
-    const std::string footer = "</memory context>";
+    const std::string header(kMemoryContextHeader);
+    const std::string footer(kMemoryContextFooter);
     const int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
     if (budget <= 0) return result;
 
@@ -176,7 +176,7 @@ StickyFormattedContext format_sticky_memory_context_budgeted(
     output << header;
     int used_tokens = 0;
     for (const auto& memory : memories) {
-        const std::string line = sticky_memory_line(memory) + "\n";
+        const std::string line = sticky_memory_line(memory, line_chars) + "\n";
         const int line_tokens = estimate_tokens(line);
         if (used_tokens + line_tokens > budget) break;
         output << line;

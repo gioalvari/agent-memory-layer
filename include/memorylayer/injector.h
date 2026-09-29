@@ -1,16 +1,19 @@
 #pragma once
 #include "memorylayer/memory_store.h"
+#include "memorylayer/retrieval.h"
 #include "json.hpp"
 #include <string>
 #include <vector>
 
 namespace memorylayer {
 
-std::string format_memory_line(const ScoredMemory& mem, double now_unix, int max_chars = 200);
+std::string format_memory_line(const ScoredMemory& mem, double now_unix,
+                               int max_chars = kDefaultMemoryLineChars);
 std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix);
 int estimate_tokens(const std::string& text);
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                           double now_unix, int max_tokens);
+                                           double now_unix, int max_tokens,
+                                           int line_chars = kDefaultMemoryLineChars);
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched
