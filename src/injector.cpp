@@ -28,11 +28,11 @@ std::string format_memory_context(const std::vector<ScoredMemory>& memories, dou
     if (memories.empty()) return "";
 
     std::ostringstream oss;
-    oss << "<memory context>\nRelevant past interactions:\n";
+    oss << kMemoryContextHeader;
     for (const auto& sm : memories) {
         oss << format_memory_line(sm, now_unix) << "\n";
     }
-    oss << "</memory context>";
+    oss << kMemoryContextFooter;
     return oss.str();
 }
 
@@ -42,11 +42,12 @@ int estimate_tokens(const std::string& text) {
 }
 
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                           double now_unix, int max_tokens) {
+                                           double now_unix, int max_tokens,
+                                           int line_chars) {
     if (memories.empty()) return "";
 
-    std::string header = "<memory context>\nRelevant past interactions:\n";
-    std::string footer = "</memory context>";
+    const std::string header(kMemoryContextHeader);
+    const std::string footer(kMemoryContextFooter);
     int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
 
     if (budget <= 0) return "";
@@ -57,7 +58,7 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
     int used_tokens = 0;
     int included = 0;
     for (const auto& sm : memories) {
-        std::string line = format_memory_line(sm, now_unix) + "\n";
+        std::string line = format_memory_line(sm, now_unix, line_chars) + "\n";
         int line_tokens = estimate_tokens(line);
 
         if (used_tokens + line_tokens > budget) break;

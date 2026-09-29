@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <string_view>
 
 namespace memorylayer {
 
@@ -40,6 +41,31 @@ inline int calibrated_top_k(float target_coverage, DecayMode mode) {
     if (target_coverage == 0.9f) return mode == DecayMode::Legacy ? 15 : 8;
     if (target_coverage == 0.95f) return mode == DecayMode::Legacy ? 26 : 16;
     return 0;
+}
+
+constexpr int kDefaultMemoryLineChars = 200;
+constexpr std::string_view kMemoryContextHeader =
+    "<memory context>\nRelevant past interactions:\n";
+constexpr std::string_view kMemoryContextFooter = "</memory context>";
+// Longest timestamp either formatter emits: "99999d ago" or "YYYY-MM-DD".
+constexpr int kMaxMemoryTimestampChars = 10;
+
+// Mirrors estimate_tokens(): bytes / 4 + 1.
+constexpr int estimate_tokens_for_bytes(int bytes) { return bytes / 4 + 1; }
+
+// Upper bound on the estimated tokens of one injected memory line,
+// "- [<time>] <user...> Response: <assistant...>\n", where each side is
+// truncated to line_chars bytes plus "...".
+constexpr int max_memory_line_tokens(int line_chars) {
+    return estimate_tokens_for_bytes(3 + kMaxMemoryTimestampChars + 2 +
+                                     2 * (line_chars + 3) + 11 + 1);
+}
+
+// Injection budget that fits k memory lines of any length without dropping one.
+constexpr int required_inject_tokens(int k, int line_chars) {
+    return k * max_memory_line_tokens(line_chars) +
+           estimate_tokens_for_bytes(static_cast<int>(kMemoryContextHeader.size())) +
+           estimate_tokens_for_bytes(static_cast<int>(kMemoryContextFooter.size()));
 }
 
 inline bool is_valid_target_coverage(float target_coverage) {

@@ -1,4 +1,5 @@
 #include "memorylayer/config.h"
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -20,7 +21,9 @@ static void print_usage() {
               << "  --dedup-threshold <f>       Deduplication cosine threshold (default: 0.92)\n"
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
-              << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048)\n"
+              << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048;\n"
+              << "                              raised to fit all k memories with --target-coverage)\n"
+              << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 200)\n"
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
@@ -75,6 +78,9 @@ Config parse_args(int argc, char* argv[]) {
             cfg.gpu_layers = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--max-inject-tokens") == 0 && i + 1 < argc) {
             cfg.max_inject_tokens = std::atoi(argv[++i]);
+            cfg.max_inject_tokens_explicit = true;
+        } else if (strcmp(arg, "--memory-line-chars") == 0 && i + 1 < argc) {
+            cfg.memory_line_chars = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--admin-token") == 0 && i + 1 < argc) {
             cfg.admin_token = argv[++i];
         } else if (strcmp(arg, "--memory-ttl-days") == 0 && i + 1 < argc) {
@@ -117,6 +123,18 @@ Config parse_args(int argc, char* argv[]) {
         std::cerr << "Error: --target-coverage must be 0.8, 0.9, or 0.95\n\n";
         print_usage();
         std::exit(1);
+    }
+
+    if (cfg.memory_line_chars <= 0) {
+        std::cerr << "Error: --memory-line-chars must be positive\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (cfg.target_coverage > 0.0f && !cfg.max_inject_tokens_explicit) {
+        const int required = required_inject_tokens(
+            calibrated_top_k(cfg.target_coverage, cfg.decay_mode), cfg.memory_line_chars);
+        cfg.max_inject_tokens = std::max(cfg.max_inject_tokens, required);
     }
 
     if (cfg.embedding_model_path.empty()) {

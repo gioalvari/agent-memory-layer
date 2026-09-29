@@ -95,9 +95,30 @@ void test_deterministic_formatting() {
     std::cout << "test_deterministic_formatting PASSED\n";
 }
 
+void test_line_chars_and_required_budget() {
+    std::vector<memorylayer::ScoredMemory> memories;
+    for (int64_t id = 1; id <= 16; ++id) {
+        auto item = memory(id);
+        item.memory.user_text = std::string(3000, 'u');
+        item.memory.assist_text = std::string(3000, 'a');
+        memories.push_back(item);
+    }
+    for (int chars : {200, 800}) {
+        const auto formatted = memorylayer::format_sticky_memory_context_budgeted(
+            memories, memorylayer::required_inject_tokens(16, chars), chars);
+        assert(formatted.memory_ids.size() == 16);
+        assert(formatted.block.find(std::string(static_cast<std::size_t>(chars), 'u') +
+                                    "...") != std::string::npos);
+        assert(formatted.block.find(std::string(static_cast<std::size_t>(chars) + 1, 'u')) ==
+               std::string::npos);
+    }
+    std::cout << "test_line_chars_and_required_budget PASSED\n";
+}
+
 } // namespace
 
 int main() {
+    test_line_chars_and_required_budget();
     test_key_stability_and_sensitivity();
     test_lru_eviction();
     test_history_reinjection_preserves_prefix();

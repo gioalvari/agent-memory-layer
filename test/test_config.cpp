@@ -31,6 +31,8 @@ void test_defaults() {
     assert(cfg.decay_mode == memorylayer::DecayMode::Tiebreak);
     assert(cfg.target_coverage == 0.0f);
     assert(cfg.gpu_layers == 99);
+    assert(cfg.max_inject_tokens == 2048);
+    assert(cfg.memory_line_chars == 200);
     std::cout << "test_defaults PASSED\n";
 }
 
@@ -40,6 +42,33 @@ void test_retrieval_options() {
     const auto cfg = memorylayer::parse_args(7, const_cast<char**>(valid));
     assert(cfg.decay_mode == memorylayer::DecayMode::Legacy);
     assert(cfg.target_coverage == 0.95f);
+
+    // Without an explicit budget, legacy 0.95 (k=26) raises the 2048 default.
+    assert(!cfg.max_inject_tokens_explicit);
+    assert(cfg.max_inject_tokens == memorylayer::required_inject_tokens(26, 200));
+    assert(cfg.max_inject_tokens > 2048);
+
+    const char* default_fits[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                  "--target-coverage", "0.9"};
+    const auto fits = memorylayer::parse_args(5, const_cast<char**>(default_fits));
+    assert(fits.max_inject_tokens == 2048);
+
+    const char* long_lines[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                "--target-coverage", "0.9", "--memory-line-chars", "800"};
+    const auto raised = memorylayer::parse_args(7, const_cast<char**>(long_lines));
+    assert(raised.memory_line_chars == 800);
+    assert(raised.max_inject_tokens == memorylayer::required_inject_tokens(8, 800));
+
+    const char* explicit_budget[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                     "--target-coverage", "0.95", "--decay-mode", "legacy",
+                                     "--max-inject-tokens", "1000"};
+    const auto kept = memorylayer::parse_args(9, const_cast<char**>(explicit_budget));
+    assert(kept.max_inject_tokens_explicit);
+    assert(kept.max_inject_tokens == 1000);
+
+    const char* bad_line_chars[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                    "--memory-line-chars", "0"};
+    assert_parse_fails(bad_line_chars);
 
     const char* invalid_mode[] = {"memory-layer", "--embedding-model", "m.gguf",
                                   "--decay-mode", "recent"};

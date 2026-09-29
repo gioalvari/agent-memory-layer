@@ -118,6 +118,14 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
             effective_top_k = std::max(1, budget / tokens_per_mem);
         }
     }
+    if (cfg_.target_coverage > 0.0f) {
+        const int calibrated_k = calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode);
+        if (effective_top_k < calibrated_k) {
+            LOG_WARN("proxy", "--max-context-tokens reduced k from " +
+                     std::to_string(calibrated_k) + " to " + std::to_string(effective_top_k) +
+                     "; target coverage does not hold for this request");
+        }
+    }
 
     const int search_top_k = effective_top_k +
         static_cast<int>(sticky_history.shown_memory_ids.size());
@@ -143,7 +151,8 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     std::vector<int64_t> injected_ids;
     if (sticky_mode) {
         const StickyFormattedContext formatted =
-            format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens);
+            format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens,
+                                                  cfg_.memory_line_chars);
         context = formatted.block;
         injected_ids = formatted.memory_ids;
         const auto injected_last_user = last_user_message_index(messages);
@@ -155,7 +164,8 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     } else {
         context = format_memory_context_budgeted(memories,
                                                  static_cast<double>(std::time(nullptr)),
-                                                 cfg_.max_inject_tokens);
+                                                 cfg_.max_inject_tokens,
+                                                 cfg_.memory_line_chars);
         inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
     }
 
@@ -792,10 +802,17 @@ setInterval(refresh,10000);
              std::to_string(calibrated_k) + ", decay_days=" +
              std::to_string(cfg_.decay_days));
     if (cfg_.target_coverage > 0.0f) {
-        LOG_WARN("proxy", "target coverage assumes all " + std::to_string(calibrated_k) +
-                 " memories are injected; memories beyond --max-inject-tokens (" +
-                 std::to_string(cfg_.max_inject_tokens) +
-                 ") or --max-context-tokens are dropped and lower the actual coverage");
+        const int required = required_inject_tokens(calibrated_k, cfg_.memory_line_chars);
+        if (cfg_.max_inject_tokens < required) {
+            LOG_WARN("proxy", "target coverage assumes all " + std::to_string(calibrated_k) +
+                     " memories are injected, which can need " + std::to_string(required) +
+                     " tokens; --max-inject-tokens " + std::to_string(cfg_.max_inject_tokens) +
+                     " may drop the lowest-ranked ones and lower the actual coverage");
+        } else {
+            LOG_INFO("proxy", "Injection budget " + std::to_string(cfg_.max_inject_tokens) +
+                     " tokens fits all " + std::to_string(calibrated_k) +
+                     " calibrated memories (worst case " + std::to_string(required) + ")");
+        }
     }
 
     const bool served = svr.listen("0.0.0.0", cfg_.port);

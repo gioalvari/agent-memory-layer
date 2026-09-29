@@ -26,7 +26,9 @@ int main(int argc, char* argv[]) {
         : cfg.top_k;
     LOG_INFO("main", "Retrieval: decay_mode=" +
              std::string(cfg.decay_mode == memorylayer::DecayMode::Tiebreak ? "tiebreak" : "legacy") +
-             ", effective_k=" + std::to_string(effective_k));
+             ", effective_k=" + std::to_string(effective_k) +
+             ", max_inject_tokens=" + std::to_string(cfg.max_inject_tokens) +
+             ", memory_line_chars=" + std::to_string(cfg.memory_line_chars));
 
     memorylayer::MemoryStore store(cfg.db_path, cfg.max_memories_per_agent, cfg.max_memories_global);
     LOG_INFO("main", "SQLite store initialized");

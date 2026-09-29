@@ -76,7 +76,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
-| `--max-inject-tokens` | `2048` | Token budget for injected memory block |
+| `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
+| `--memory-line-chars` | `200` | Bytes kept from each user/assistant side of an injected memory |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
@@ -366,9 +367,19 @@ retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 16** for tiebreak scor
 all 467 labeled questions. See [the conformal retrieval study](docs/conformal-retrieval.md).
 The calibration uses synthetic session dates, guarantees only marginal
 at-least-one-evidence coverage, and is model-specific.
-The guarantee assumes all k memories are injected: raise `--max-inject-tokens`
-accordingly (in the study 8 memories averaged ~4,300 tokens, above the 2,048
-default), otherwise the budget drops the lowest-ranked ones and lowers coverage.
+The guarantee assumes all k memories are injected. Each memory is one line
+whose user and assistant sides are cut to `--memory-line-chars` bytes (200 by
+default, at most 109 estimated tokens per line), so with `--target-coverage`
+and no explicit `--max-inject-tokens` the budget is raised to fit k worst-case
+lines (only legacy 0.95 exceeds the 2,048 default). An explicit budget is kept
+and logged if it can drop calibrated memories; a `--max-context-tokens` cut is
+logged per request.
+
+Coverage here means an evidence-labeled memory was retrieved, not that the
+model can read the answer: on 214 questions whose short answer appears
+verbatim in an evidence turn, the answer survives 200-byte truncation in 52%,
+and 80% / 92% at 400 / 800 bytes. Raise `--memory-line-chars` when answers
+sit deep in long turns; the study reports the depth x length trade-off.
 
 ### Dual-Embedding Search
 

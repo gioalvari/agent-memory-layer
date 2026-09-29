@@ -1,4 +1,5 @@
 #include "memorylayer/injector.h"
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <ctime>
@@ -119,7 +120,51 @@ void test_parse_inject_mode() {
     std::cout << "test_parse_inject_mode PASSED\n";
 }
 
+memorylayer::ScoredMemory long_memory(double created_at) {
+    memorylayer::ScoredMemory sm;
+    sm.memory.user_text = std::string(5000, 'u');
+    sm.memory.assist_text = std::string(5000, 'a');
+    sm.memory.created_at = created_at;
+    return sm;
+}
+
+void test_line_token_bound_holds() {
+    const double now = 100000.0 * 86400.0;
+    for (int chars : {50, 200, 800}) {
+        // Oldest representable age gives the longest "99999d ago" timestamp.
+        const auto line = memorylayer::format_memory_line(long_memory(86400.0), now, chars);
+        assert(line.find(std::string(static_cast<std::size_t>(chars), 'u') + "...") !=
+               std::string::npos);
+        assert(line.find(std::string(static_cast<std::size_t>(chars) + 1, 'u')) ==
+               std::string::npos);
+        assert(memorylayer::estimate_tokens(line + "\n") <=
+               memorylayer::max_memory_line_tokens(chars));
+    }
+    std::cout << "test_line_token_bound_holds PASSED\n";
+}
+
+void test_required_budget_fits_all_k_memories() {
+    const double now = 100000.0 * 86400.0;
+    for (int chars : {200, 800}) {
+        for (int k : {4, 16, 26}) {
+            std::vector<memorylayer::ScoredMemory> memories(
+                static_cast<std::size_t>(k), long_memory(86400.0));
+            const int budget = memorylayer::required_inject_tokens(k, chars);
+            const auto fits = memorylayer::format_memory_context_budgeted(
+                memories, now, budget, chars);
+            // Two header newlines plus one per injected memory line.
+            assert(static_cast<int>(std::count(fits.begin(), fits.end(), '\n')) == k + 2);
+            const auto tight = memorylayer::format_memory_context_budgeted(
+                memories, now, budget - memorylayer::max_memory_line_tokens(chars), chars);
+            assert(static_cast<int>(std::count(tight.begin(), tight.end(), '\n')) == k + 1);
+        }
+    }
+    std::cout << "test_required_budget_fits_all_k_memories PASSED\n";
+}
+
 int main() {
+    test_line_token_bound_holds();
+    test_required_budget_fits_all_k_memories();
     test_inject_suffix_keeps_prefix_stable();
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();
