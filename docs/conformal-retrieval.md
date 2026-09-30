@@ -215,8 +215,11 @@ legacy 0.9 / 0.95.
 **Adaptive k end to end.** `--adaptive-k` at 90% (21 / 7 / 4 memories by top-1
 tercile, 400 bytes) is not distinguishable from a fixed 8 x 400 on answers:
 +0.5 (-3.3, +4.2) on Qwen and +1.9 (-2.8, +6.1) on Llama, for ~24% more prompt
-tokens. It moves retrieval coverage to low-confidence queries, but the model
-cannot turn most of that into answers, so it stays opt-in.
+tokens. By top-1 tercile (n = 67 / 63 / 84) it gains on low-confidence queries
+(Qwen 40.3 -> 44.8%, Llama 32.8 -> 44.8%) and loses on high-confidence ones,
+where k drops from 8 to 4 (Qwen 60.7 -> 56.0%, Llama 59.5 -> 53.6%): at-least-one
+evidence coverage is not enough context to answer. The net is about zero, so it
+stays opt-in; a floor on k (e.g. max(adaptive, 8)) is the obvious next variant.
 
 The limits are two 7--8B models, one prompt, and substring grading on
 questions whose answer is a short verbatim string. The coverage guarantees
