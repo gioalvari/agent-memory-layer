@@ -39,6 +39,7 @@ from conformal_retrieval.study import (
     DATA_DIR,
     DECAY_TIEBREAK_SCORE,
     QUESTIONS_PATH,
+    RAW_SCORE,
     SEED,
     EmbeddedQuestion,
     Memory,
@@ -51,7 +52,6 @@ from conformal_retrieval.study import (
 LOGGER = logging.getLogger(__name__)
 CHAT_URL = "http://127.0.0.1:8491/v1/chat/completions"
 CACHE_PATH = DATA_DIR / "endtoend_cache.sqlite"
-RESULTS_PATH = DATA_DIR / "endtoend_results.json"
 HEADER = "<memory context>\nRelevant past interactions:\n"
 FOOTER = "</memory context>"
 SYSTEM_PROMPT = (
@@ -72,6 +72,12 @@ class Setting:
     k: int
     line_bytes: int
     oracle: bool = False
+    adaptive: tuple[tuple[float, float], tuple[int, int, int]] | None = None
+
+
+# Deployed 90% Mondrian table for tiebreak ranking (retrieval.h, followup.py):
+# top-1 raw-cosine tercile edges and one k per tercile.
+ADAPTIVE_90 = ((0.6318194, 0.7150962), (21, 7, 4))
 
 
 SETTINGS = (
@@ -84,6 +90,7 @@ SETTINGS = (
     Setting("k8_b400", 8, 400),
     Setting("k4_b800", 4, 800),
     Setting("k8_b800", 8, 800),
+    Setting("adaptive90_b400", 0, 400, adaptive=ADAPTIVE_90),
     Setting("k2_b1600", 2, 1600),
     Setting("oracle_b1600", 0, 1600, oracle=True),
 )
@@ -121,12 +128,24 @@ def memory_block(memories: Sequence[Memory], line_bytes: int) -> str:
     return HEADER + "".join(lines) + FOOTER
 
 
+def adaptive_k(
+    table: tuple[tuple[float, float], tuple[int, int, int]], top1: float
+) -> int:
+    """Return the tercile k; edges are inclusive upper bounds like the proxy."""
+    (low, high), ks = table
+    return ks[0] if top1 <= low else ks[1] if top1 <= high else ks[2]
+
+
 def select(question: EmbeddedQuestion, setting: Setting) -> list[Memory]:
     """Return the memories injected for ``setting`` in rank order."""
-    order = np.argsort(-score_memories(question)[DECAY_TIEBREAK_SCORE], kind="stable")
+    scores = score_memories(question)
+    order = np.argsort(-scores[DECAY_TIEBREAK_SCORE], kind="stable")
     ranked = [question.question.memories[int(index)] for index in order]
     if setting.oracle:
         return [memory for memory in ranked if memory.evidence]
+    if setting.adaptive is not None:
+        top1 = float(scores[RAW_SCORE][order[0]])
+        return ranked[: adaptive_k(setting.adaptive, top1)]
     return ranked[: setting.k]
 
 
@@ -208,7 +227,12 @@ def request_key(model: str, messages: Sequence[Mapping[str, str]]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def chat(messages: Sequence[Mapping[str, str]]) -> tuple[str, int]:
+def results_path(model: str) -> Path:
+    """Return the per-model results file."""
+    return DATA_DIR / f"endtoend_{re.sub(r'[^A-Za-z0-9._-]', '_', model)}.json"
+
+
+def chat(messages: Sequence[Mapping[str, str]], url: str = CHAT_URL) -> tuple[str, int]:
     """Send one greedy chat completion to the local server."""
     body = {
         "messages": list(messages),
@@ -217,7 +241,7 @@ def chat(messages: Sequence[Mapping[str, str]]) -> tuple[str, int]:
         "max_tokens": MAX_TOKENS,
     }
     request = urllib.request.Request(
-        CHAT_URL,
+        url,
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -226,7 +250,7 @@ def chat(messages: Sequence[Mapping[str, str]]) -> tuple[str, int]:
         with urllib.request.urlopen(request, timeout=600) as response:
             payload = json.loads(response.read())
     except urllib.error.URLError as error:
-        raise RuntimeError(f"Chat endpoint unavailable at {CHAT_URL}") from error
+        raise RuntimeError(f"Chat endpoint unavailable at {url}") from error
     reply = str(payload["choices"][0]["message"]["content"] or "")
     return reply, int(payload["usage"]["prompt_tokens"])
 
@@ -240,6 +264,12 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="label stored with results")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--url", default=CHAT_URL)
+    parser.add_argument(
+        "--settings",
+        default="",
+        help="comma-separated setting names (default: all); must include " + REFERENCE,
+    )
     arguments = parser.parse_args()
     records = json.loads(QUESTIONS_PATH.read_text())
     answers = {str(r["question_id"]): str(r["answer"]) for r in records}
@@ -253,9 +283,16 @@ def main() -> None:
         if not question.question.abstention
         and short_answer(question, answers) is not None
     ]
+    names = [n for n in arguments.settings.split(",") if n] or [
+        s.name for s in SETTINGS
+    ]
+    unknown = set(names) - {s.name for s in SETTINGS}
+    if unknown or REFERENCE not in names:
+        parser.error(f"unknown settings {sorted(unknown)} or missing {REFERENCE}")
+    settings = [s for s in SETTINGS if s.name in names]
     if arguments.limit:
         questions = questions[: arguments.limit]
-    LOGGER.info("Evaluating %d questions x %d settings", len(questions), len(SETTINGS))
+    LOGGER.info("Evaluating %d questions x %d settings", len(questions), len(settings))
     cache = ReplyCache(CACHE_PATH)
 
     def run(item: tuple[EmbeddedQuestion, Setting]) -> dict[str, Any]:
@@ -264,7 +301,9 @@ def main() -> None:
         messages = build_messages(question, setting, dates[qid])
         key = request_key(arguments.model, messages)
         cached = cache.get(key)
-        reply, prompt_tokens = cached if cached is not None else chat(messages)
+        reply, prompt_tokens = (
+            cached if cached is not None else chat(messages, arguments.url)
+        )
         if cached is None:
             cache.put(key, reply, prompt_tokens)
         return {
@@ -275,14 +314,14 @@ def main() -> None:
             "prompt_tokens": prompt_tokens,
         }
 
-    jobs = [(question, setting) for setting in SETTINGS for question in questions]
+    jobs = [(question, setting) for setting in settings for question in questions]
     rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=arguments.workers) as pool:
         for index, row in enumerate(pool.map(run, jobs), start=1):
             rows.append(row)
             if index % 100 == 0:
                 LOGGER.info("Completed %d/%d requests", index, len(jobs))
-    by_setting: dict[str, list[dict[str, Any]]] = {s.name: [] for s in SETTINGS}
+    by_setting: dict[str, list[dict[str, Any]]] = {s.name: [] for s in settings}
     for row in rows:
         by_setting[row["setting"]].append(row)
     for items in by_setting.values():
@@ -290,7 +329,7 @@ def main() -> None:
     rng = np.random.default_rng(SEED)
     reference = [row["correct"] for row in by_setting[REFERENCE]]
     summary: dict[str, Any] = {}
-    for setting in SETTINGS:
+    for setting in settings:
         items = by_setting[setting.name]
         correct = [row["correct"] for row in items]
         summary[setting.name] = {
@@ -306,7 +345,8 @@ def main() -> None:
                 for name in sorted({r["question_type"] for r in items})
             },
         }
-    RESULTS_PATH.write_text(
+    output = results_path(arguments.model)
+    output.write_text(
         json.dumps(
             {
                 "model": arguments.model,
@@ -317,7 +357,7 @@ def main() -> None:
             indent=2,
         )
     )
-    LOGGER.info("Wrote %s", RESULTS_PATH)
+    LOGGER.info("Wrote %s", output)
 
 
 if __name__ == "__main__":
