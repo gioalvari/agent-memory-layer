@@ -30,6 +30,7 @@ from conformal_retrieval.study import (
     DECAY_TIEBREAK_SCORE,
     PRODUCTION_SCORE,
     QUESTIONS_PATH,
+    RAW_SCORE,
     REPETITIONS,
     SEED,
     EmbeddedQuestion,
@@ -151,11 +152,17 @@ class Profile:
     best_rank: int
     last_rank: int
     evidence_count: int
+    top1_similarity: float
 
     @property
     def top1(self) -> float:
-        """Return the best similarity, a serving-time feature."""
-        return float(self.sorted_scores[0])
+        """Return the raw cosine of the top-ranked memory, known at serving time.
+
+        This is the unboosted ``max(cos(query, user), cos(query, assistant))``
+        of the first memory in rank order, which the proxy can read before it
+        decides how many memories to inject.
+        """
+        return self.top1_similarity
 
     @property
     def tokens_to_first(self) -> int:
@@ -177,10 +184,18 @@ class Profile:
 
 
 def build_profile(
-    question: EmbeddedQuestion, scores: np.ndarray, tokens: np.ndarray
+    question: EmbeddedQuestion,
+    scores: np.ndarray,
+    tokens: np.ndarray,
+    similarity: np.ndarray | None = None,
 ) -> Profile:
-    """Rank one haystack and precompute its coverage and token curves."""
+    """Rank one haystack and precompute its coverage and token curves.
+
+    ``similarity`` is the raw cosine used for the serving-time top-1 feature;
+    it defaults to ``scores``.
+    """
     order = np.argsort(-scores, kind="stable")
+    raw = scores if similarity is None else similarity
     evidence = np.asarray([memory.evidence for memory in question.question.memories])[
         order
     ]
@@ -193,6 +208,7 @@ def build_profile(
         best_rank=int(positions[0] + 1),
         last_rank=int(positions[-1] + 1),
         evidence_count=int(evidence.sum()),
+        top1_similarity=float(raw[order[0]]),
     )
 
 
@@ -388,8 +404,28 @@ def deployed_calibration(profiles: Sequence[Profile]) -> dict[str, Any]:
             "rank_k_tokens_max": float(np.max(tokens)),
             "token_budget": budget,
             "crc_recall_k": int(crc),
+            "mondrian_top1": deployed_mondrian(profiles, alpha),
         }
     return result
+
+
+def deployed_mondrian(profiles: Sequence[Profile], alpha: float) -> dict[str, Any]:
+    """Return top-1 tercile edges and per-tercile rank quantiles on all data."""
+    edges = mondrian_edges([profile.top1 for profile in profiles])
+    groups: dict[int, list[Profile]] = defaultdict(list)
+    for profile in profiles:
+        groups[int(np.searchsorted(edges, profile.top1))].append(profile)
+    ks = [
+        rank_quantile([p.best_rank for p in groups[b]], alpha)
+        for b in range(MONDRIAN_BINS)
+    ]
+    sizes = [ks[int(np.searchsorted(edges, profile.top1))] for profile in profiles]
+    return {
+        "edges": [float(edge) for edge in edges],
+        "k": ks,
+        "n": [len(groups[b]) for b in range(MONDRIAN_BINS)],
+        "mean_k": float(np.mean(sizes)),
+    }
 
 
 def visible_prefix(text: str, max_bytes: int) -> str:
@@ -538,8 +574,14 @@ def main() -> None:
         profiles = []
         for question in answerable:
             tokens = np.asarray([line_tokens(m) for m in question.question.memories])
+            scores = score_memories(question)
             profiles.append(
-                build_profile(question, score_memories(question)[variant], tokens)
+                build_profile(
+                    question,
+                    scores[variant],
+                    tokens,
+                    similarity=scores[RAW_SCORE],
+                )
             )
         results[label] = {
             "tokens": token_accounting(profiles),

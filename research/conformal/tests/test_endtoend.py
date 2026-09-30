@@ -5,15 +5,18 @@ from __future__ import annotations
 import numpy as np
 
 from conformal_retrieval.endtoend import (
+    ADAPTIVE_90,
     FOOTER,
     HEADER,
     Setting,
+    adaptive_k,
     build_messages,
     is_correct,
     memory_block,
     normalize,
     paired_bootstrap,
     request_key,
+    results_path,
     select,
     time_ago,
     truncate,
@@ -91,3 +94,20 @@ def test_paired_bootstrap_difference() -> None:
     )
     assert result["diff"] == 0.5
     assert result["low"] <= 0.5 <= result["high"]
+
+
+def test_results_path_is_per_model_and_safe() -> None:
+    """Model labels become safe, distinct file names."""
+    assert results_path("qwen2.5-7b").name == "endtoend_qwen2.5-7b.json"
+    assert results_path("a/b c").name == "endtoend_a_b_c.json"
+
+
+def test_adaptive_k_matches_proxy_edges() -> None:
+    """Edges are inclusive upper bounds, as in retrieval.h adaptive_bin."""
+    assert adaptive_k(ADAPTIVE_90, 0.5) == 21
+    assert adaptive_k(ADAPTIVE_90, 0.6318194) == 21
+    assert adaptive_k(ADAPTIVE_90, 0.7) == 7
+    assert adaptive_k(ADAPTIVE_90, 0.9) == 4
+    item = question()
+    table = ((0.0, 0.5), (1, 2, 3))
+    assert len(select(item, Setting("a", 0, 200, adaptive=table))) == 3

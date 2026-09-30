@@ -39,6 +39,7 @@ def make_profile(
         best_rank=int(positions[0] + 1),
         last_rank=int(positions[-1] + 1),
         evidence_count=int(flags.sum()),
+        top1_similarity=float(scores[0]),
     )
 
 

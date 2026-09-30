@@ -107,14 +107,21 @@ token tail (p95 3.3k, max 7.1k): score gaps are not comparable across queries.
 
 **Adaptive k from a serving-time feature.** Global rank k is marginally valid
 but very uneven by query confidence. Split the calibration set into terciles of
-top-1 similarity (known before injection); the 90% global k covers the
-low / mid / high tercile at 80.0 / 93.2 / 99.4%. A separate rank quantile per
-tercile (Mondrian) gives 91.1 / 92.0 / 94.4% with mean 24.4 / 7.6 / 4.0
-memories: it spends ~45% more tokens to move coverage from low-confidence to
-high-confidence queries. At 80% the tercile coverage goes from
-66.9 / 86.5 / 94.8% to 81.4 / 83.7 / 83.8%. Each bin has only ~78 calibration
-questions and its edges are embedding-model-specific, so this is a candidate,
-not yet a proxy option.
+top-1 similarity, the raw cosine of the top-ranked memory, which the proxy
+knows before injection. The 90% global k covers the low / mid / high tercile
+at 80.1 / 93.2 / 99.4%. A separate rank quantile per tercile (Mondrian) gives
+91.1 / 92.1 / 94.4% with mean 24.4 / 7.7 / 4.0 memories: it spends ~45% more
+tokens to move coverage from low-confidence to high-confidence queries. At 80%
+the tercile coverage goes from 67.0 / 86.5 / 94.8% to 81.3 / 83.7 / 83.9%.
+
+The deployed table, calibrated once on all 467 questions (155--156 per
+tercile), is available as `--adaptive-k` together with `--target-coverage`.
+Tiebreak edges are 0.632 and 0.715; k per tercile is 9 / 3 / 2 at 80%,
+21 / 7 / 4 at 90% and 49 / 14 / 5 at 95% (legacy: edges 0.607 / 0.697,
+k 20 / 4 / 3, 35 / 8 / 5, 69 / 17 / 7). The injection budget is sized for the
+low-confidence k. The edges are specific to nomic-embed-text; with another
+embedding model the table must be recalibrated. The guarantee per tercile is
+still marginal within the tercile and assumes exchangeability.
 
 **Conformal risk control.** Rank conformal controls *at least one* evidence
 memory; with 1.88 evidence pairs per question it leaves recall at 81% and all
@@ -178,13 +185,45 @@ more at k = 8 (+0.9, +8.4) for 650 more tokens. Retrieval is still the ceiling:
 injecting only the labeled evidence reaches 66.4% at the same token cost as
 8 x 200, and multi-session questions stay below 20% in every setting.
 
+**Second model.** The same protocol with Llama-3.1-8B-Instruct (Q4_K_M,
+bartowski GGUF) on a subset of settings; results are in
+`data/endtoend_<model>.json` (run with `--model <label> --settings ...`).
+
+| memories x bytes per side | Qwen2.5-7B | Llama-3.1-8B | prompt tokens (Llama) |
+|---|---:|---:|---:|
+| none | 1.9% | 1.4% | 102 |
+| 5 x 200 | 40.2% | 33.2% | 561 |
+| 8 x 200 | 41.1% | 35.5% | 818 |
+| 5 x 400 | 53.7% | 50.5% | 832 |
+| 8 x 400 | 55.1% | 53.3% | 1,242 |
+| adaptive 90% x 400 | 55.6% | 55.1% | 1,530 |
+| 8 x 800 | 59.8% | 62.6% | 1,887 |
+| evidence only x 1,600 | 66.4% | 65.0% | 806 |
+
+The line-length effect replicates and is larger on Llama: 5 x 400 beats
+5 x 200 by +13.6 (+7.9, +19.2) on Qwen and +17.3 (+11.7, +22.4) on Llama, and
+8 x 800 beats 8 x 400 by +4.7 (+0.9, +8.4) and +9.3 (+4.2, +14.5).
+
 The proxy default `--memory-line-chars` is now 400: the longest value at which
 the default five memories fit the 2,048-token budget in the worst case
-(1,062 estimated tokens), so no line is dropped. With `--target-coverage` the
-budget is raised above 2,048 for tiebreak 0.95 and legacy 0.9 / 0.95. The
-limits are one 7B model, one prompt, and substring grading on questions whose
-answer is a short verbatim string. The coverage guarantees above are unchanged
-because they concern ranking, not line length.
+(1,062 estimated tokens), so no line is dropped. Longer lines keep paying off
+if the budget allows; `--memory-line-chars 800` with a larger
+`--max-inject-tokens` is the better setting when prompt tokens are cheap. With
+`--target-coverage` the budget is raised above 2,048 for tiebreak 0.95 and
+legacy 0.9 / 0.95.
+
+**Adaptive k end to end.** `--adaptive-k` at 90% (21 / 7 / 4 memories by top-1
+tercile, 400 bytes) is not distinguishable from a fixed 8 x 400 on answers:
++0.5 (-3.3, +4.2) on Qwen and +1.9 (-2.8, +6.1) on Llama, for ~24% more prompt
+tokens. By top-1 tercile (n = 67 / 63 / 84) it gains on low-confidence queries
+(Qwen 40.3 -> 44.8%, Llama 32.8 -> 44.8%) and loses on high-confidence ones,
+where k drops from 8 to 4 (Qwen 60.7 -> 56.0%, Llama 59.5 -> 53.6%): at-least-one
+evidence coverage is not enough context to answer. The net is about zero, so it
+stays opt-in; a floor on k (e.g. max(adaptive, 8)) is the obvious next variant.
+
+The limits are two 7--8B models, one prompt, and substring grading on
+questions whose answer is a short verbatim string. The coverage guarantees
+above are unchanged because they concern ranking, not line length.
 
 Validation: `uv run ruff check .`, `uv run mypy src tests`, and `uv run pytest`
-all pass (20 tests).
+all pass (22 tests).

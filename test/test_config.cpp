@@ -74,6 +74,17 @@ void test_retrieval_options() {
     assert(kept.max_inject_tokens_explicit);
     assert(kept.max_inject_tokens == 1000);
 
+    const char* adaptive[] = {"memory-layer", "--embedding-model", "m.gguf",
+                              "--target-coverage", "0.9", "--adaptive-k"};
+    const auto adaptive_cfg = memorylayer::parse_args(6, const_cast<char**>(adaptive));
+    assert(adaptive_cfg.adaptive_k);
+    // The budget must fit the deepest (low-confidence) tercile, k = 21.
+    assert(adaptive_cfg.max_inject_tokens == memorylayer::required_inject_tokens(21, 400));
+
+    const char* adaptive_alone[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                    "--adaptive-k"};
+    assert_parse_fails(adaptive_alone);
+
     const char* bad_line_chars[] = {"memory-layer", "--embedding-model", "m.gguf",
                                     "--memory-line-chars", "0"};
     assert_parse_fails(bad_line_chars);

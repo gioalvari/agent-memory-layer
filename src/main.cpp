@@ -21,12 +21,20 @@ int main(int argc, char* argv[]) {
     LOG_INFO("main", "Database: " + cfg.db_path);
     LOG_INFO("main", "Backend: " + cfg.backend_url);
     LOG_INFO("main", "Port: " + std::to_string(cfg.port));
-    const int effective_k = cfg.target_coverage > 0.0f
-        ? memorylayer::calibrated_top_k(cfg.target_coverage, cfg.decay_mode)
-        : cfg.top_k;
+    std::string k_desc = "effective_k=" + std::to_string(cfg.top_k);
+    if (cfg.target_coverage > 0.0f && cfg.adaptive_k) {
+        const auto* table = memorylayer::adaptive_k_table(cfg.target_coverage, cfg.decay_mode);
+        k_desc = "adaptive_k=" + std::to_string(table->k[0]) + "/" +
+                 std::to_string(table->k[1]) + "/" + std::to_string(table->k[2]) +
+                 " (top-1 similarity <=" + std::to_string(table->edge_low) + ", <=" +
+                 std::to_string(table->edge_high) + ", above)";
+    } else if (cfg.target_coverage > 0.0f) {
+        k_desc = "effective_k=" +
+                 std::to_string(memorylayer::calibrated_top_k(cfg.target_coverage, cfg.decay_mode));
+    }
     LOG_INFO("main", "Retrieval: decay_mode=" +
              std::string(cfg.decay_mode == memorylayer::DecayMode::Tiebreak ? "tiebreak" : "legacy") +
-             ", effective_k=" + std::to_string(effective_k) +
+             ", " + k_desc +
              ", max_inject_tokens=" + std::to_string(cfg.max_inject_tokens) +
              ", memory_line_chars=" + std::to_string(cfg.memory_line_chars));
 
