@@ -74,6 +74,7 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--decay-days` | `30` | Linear recency horizon (days; decay floors at 0.5) |
 | `--decay-mode` | `tiebreak` | `tiebreak`: preserve cosine ranking and use recency only for near-ties; `legacy`: multiply similarity by decay |
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
+| `--adaptive-k` | off | With `--target-coverage`: choose k per query from its top-1 similarity tercile (Mondrian conformal), e.g. 21 / 7 / 4 at 0.9 |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
@@ -389,6 +390,15 @@ verbatim in an evidence turn, Qwen2.5-7B-Instruct answers correctly with:
 | 8 x 400 | 55.1% | 1,236 |
 | 8 x 800 | 59.8% | 1,890 |
 | evidence only x 1,600 | 66.4% | 796 |
+
+Llama-3.1-8B-Instruct shows the same pattern (5 x 200: 33.2%, 5 x 400: 50.5%,
+8 x 800: 62.6%); see the study for both models.
+
+`--adaptive-k` gives queries with a weak best match more memories and confident
+ones fewer. At 0.9 it equalizes coverage across top-1 similarity terciles
+(91 / 92 / 94% instead of 80 / 93 / 99%) for about 45% more tokens. End to
+end it is within two points of a fixed 8 x 400 on both Qwen2.5-7B and
+Llama-3.1-8B (not significant) for ~24% more prompt tokens, so it is opt-in.
 
 Past a few memories, line length matters more than depth. 400 bytes is the
 longest default at which five worst-case lines fit the 2,048-token budget.

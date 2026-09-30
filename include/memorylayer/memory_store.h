@@ -25,6 +25,7 @@ struct Memory {
 struct ScoredMemory {
     Memory memory;
     float score;
+    float similarity = 0.0f;  // raw max(cos user, cos assistant), no boost or decay
 };
 
 class MemoryStore {

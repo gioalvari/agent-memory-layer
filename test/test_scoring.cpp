@@ -79,6 +79,10 @@ void test_agent_boost() {
     float ratio = results[0].score / results[1].score;
     assert(ratio > 1.4f && ratio < 1.6f);  // approximately 1.5x
 
+    // similarity is the raw cosine, unaffected by the agent boost.
+    assert(std::abs(results[0].similarity - 1.0f) < 1e-5f);
+    assert(std::abs(results[1].similarity - 1.0f) < 1e-5f);
+
     std::remove("test_boost.sqlite");
     std::cout << "test_agent_boost PASSED\n";
 }

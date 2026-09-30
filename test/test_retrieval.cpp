@@ -67,7 +67,26 @@ void test_target_coverage_mapping() {
     std::cout << "test_target_coverage_mapping PASSED\n";
 }
 
+void test_adaptive_k_mapping() {
+    using memorylayer::DecayMode;
+    using memorylayer::adaptive_top_k;
+    // Values from research/conformal followup.py deployed Mondrian calibration.
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.50f) == 21);
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.6318194f) == 21);  // edge is inclusive
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.68f) == 7);
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.90f) == 4);
+    assert(adaptive_top_k(0.8f, DecayMode::Tiebreak, 0.90f) == 2);
+    assert(adaptive_top_k(0.95f, DecayMode::Tiebreak, 0.10f) == 49);
+    assert(adaptive_top_k(0.95f, DecayMode::Legacy, 0.65f) == 17);
+    assert(adaptive_top_k(0.85f, DecayMode::Tiebreak, 0.9f) == 0);
+    assert(memorylayer::max_calibrated_top_k(0.9f, DecayMode::Tiebreak, true) == 21);
+    assert(memorylayer::max_calibrated_top_k(0.9f, DecayMode::Tiebreak, false) == 8);
+    assert(memorylayer::max_calibrated_top_k(0.95f, DecayMode::Legacy, true) == 69);
+    std::cout << "test_adaptive_k_mapping PASSED\n";
+}
+
 int main() {
+    test_adaptive_k_mapping();
     test_rank_score_python_parity();
     test_tiebreak_scoring_behavior();
     test_target_coverage_mapping();

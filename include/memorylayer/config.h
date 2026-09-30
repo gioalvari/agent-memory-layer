@@ -14,6 +14,8 @@ struct Config {
     int decay_days = 30;
     DecayMode decay_mode = DecayMode::Tiebreak;
     float target_coverage = 0.0f;
+    // With target_coverage: pick k per query from its top-1 similarity tercile.
+    bool adaptive_k = false;
     float dedup_threshold = 0.92f;
     int max_memories_per_agent = 1000;
     int max_memories_global = 5000;

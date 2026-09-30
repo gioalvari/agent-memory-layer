@@ -43,6 +43,56 @@ inline int calibrated_top_k(float target_coverage, DecayMode mode) {
     return 0;
 }
 
+// Mondrian rank conformal on the serving-time confidence of a query: the raw
+// (unboosted) cosine of its top-ranked memory. Tercile edges and one rank
+// quantile per tercile, calibrated on the same 467 questions (about 155 per
+// tercile). Queries whose best match is weak get a deeper k, confident ones a
+// shallower k, so coverage is roughly equal across terciles rather than only
+// on average.
+struct AdaptiveKTable {
+    float edge_low;
+    float edge_high;
+    int k[3];  // low, mid, high top-1 similarity
+};
+
+inline const AdaptiveKTable* adaptive_k_table(float target_coverage, DecayMode mode) {
+    static constexpr AdaptiveKTable kTiebreak[] = {
+        {0.6318194f, 0.7150962f, {9, 3, 2}},
+        {0.6318194f, 0.7150962f, {21, 7, 4}},
+        {0.6318194f, 0.7150962f, {49, 14, 5}},
+    };
+    static constexpr AdaptiveKTable kLegacy[] = {
+        {0.6065812f, 0.6967925f, {20, 4, 3}},
+        {0.6065812f, 0.6967925f, {35, 8, 5}},
+        {0.6065812f, 0.6967925f, {69, 17, 7}},
+    };
+    const AdaptiveKTable* table = mode == DecayMode::Legacy ? kLegacy : kTiebreak;
+    if (target_coverage == 0.8f) return &table[0];
+    if (target_coverage == 0.9f) return &table[1];
+    if (target_coverage == 0.95f) return &table[2];
+    return nullptr;
+}
+
+// Tercile index: 0 when top1 <= edge_low, 1 when <= edge_high, else 2.
+inline int adaptive_bin(const AdaptiveKTable& table, float top1_similarity) {
+    if (top1_similarity <= table.edge_low) return 0;
+    if (top1_similarity <= table.edge_high) return 1;
+    return 2;
+}
+
+inline int adaptive_top_k(float target_coverage, DecayMode mode, float top1_similarity) {
+    const AdaptiveKTable* table = adaptive_k_table(target_coverage, mode);
+    return table ? table->k[adaptive_bin(*table, top1_similarity)] : 0;
+}
+
+// Deepest k a coverage policy can request: the calibrated k, or the
+// low-confidence tercile's k when adaptive.
+inline int max_calibrated_top_k(float target_coverage, DecayMode mode, bool adaptive) {
+    if (!adaptive) return calibrated_top_k(target_coverage, mode);
+    const AdaptiveKTable* table = adaptive_k_table(target_coverage, mode);
+    return table ? table->k[0] : 0;
+}
+
 // 400 bytes per side: on LongMemEval-S with Qwen2.5-7B, five 400-byte memories
 // answer 53.7% of short-answer questions versus 40.2% at 200 bytes, and five
 // worst-case lines still fit the 2048-token default injection budget.

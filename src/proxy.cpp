@@ -104,8 +104,9 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     }
 
     // Context overflow guard: estimate total tokens and reduce top_k if needed
-    int effective_top_k = cfg_.target_coverage > 0.0f
-        ? calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode)
+    const bool coverage_mode = cfg_.target_coverage > 0.0f;
+    int effective_top_k = coverage_mode
+        ? max_calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode, cfg_.adaptive_k)
         : cfg_.top_k;
     if (cfg_.max_context_tokens > 0) {
         // Rough estimate: 4 chars per token for user prompt
@@ -118,14 +119,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
             effective_top_k = std::max(1, budget / tokens_per_mem);
         }
     }
-    if (cfg_.target_coverage > 0.0f) {
-        const int calibrated_k = calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode);
-        if (effective_top_k < calibrated_k) {
-            LOG_WARN("proxy", "--max-context-tokens reduced k from " +
-                     std::to_string(calibrated_k) + " to " + std::to_string(effective_top_k) +
-                     "; target coverage does not hold for this request");
-        }
-    }
+    const int guarded_top_k = effective_top_k;
 
     const int search_top_k = effective_top_k +
         static_cast<int>(sticky_history.shown_memory_ids.size());
@@ -133,9 +127,26 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                                   cfg_.min_score_threshold, cfg_.decay_days,
                                   cfg_.agent_boost, cfg_.decay_mode);
 
+    if (coverage_mode) {
+        // The adaptive k depends on the query's top-ranked memory, before
+        // excluding memories that sticky mode already showed.
+        const int required_k = cfg_.adaptive_k && !memories.empty()
+            ? adaptive_top_k(cfg_.target_coverage, cfg_.decay_mode,
+                             memories.front().similarity)
+            : calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode);
+        if (cfg_.adaptive_k) effective_top_k = std::min(guarded_top_k, required_k);
+        if (guarded_top_k < required_k) {
+            LOG_WARN("proxy", "--max-context-tokens reduced k from " +
+                     std::to_string(required_k) + " to " + std::to_string(guarded_top_k) +
+                     "; target coverage does not hold for this request");
+        }
+    }
+
     if (sticky_mode) {
         memories = filter_excluded_memories(memories, sticky_history.shown_memory_ids,
                                             effective_top_k);
+    } else if (static_cast<int>(memories.size()) > effective_top_k) {
+        memories.erase(memories.begin() + effective_top_k, memories.end());
     }
 
     if (memories.empty()) {
@@ -794,11 +805,12 @@ setInterval(refresh,10000);
     LOG_INFO("proxy", "Listening on http://0.0.0.0:" + std::to_string(cfg_.port));
     LOG_INFO("proxy", "Backend: " + cfg_.backend_url);
     const int calibrated_k = cfg_.target_coverage > 0.0f
-        ? calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode)
+        ? max_calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode, cfg_.adaptive_k)
         : cfg_.top_k;
     const std::string decay_mode = cfg_.decay_mode == DecayMode::Tiebreak ? "tiebreak" : "legacy";
     LOG_INFO("proxy", "Memory injection: mode=" + cfg_.inject_mode +
-             ", decay_mode=" + decay_mode + ", effective_k=" +
+             ", decay_mode=" + decay_mode +
+             (cfg_.adaptive_k ? ", adaptive_k up to " : ", effective_k=") +
              std::to_string(calibrated_k) + ", decay_days=" +
              std::to_string(cfg_.decay_days));
     if (cfg_.target_coverage > 0.0f) {

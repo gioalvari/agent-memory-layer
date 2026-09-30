@@ -18,6 +18,7 @@ static void print_usage() {
                << "  --decay-days <n>            Temporal decay half-life (default: 30)\n"
                << "  --decay-mode <mode>         tiebreak | legacy (default: tiebreak)\n"
                << "  --target-coverage <p>       0.8 | 0.9 | 0.95 calibrated retrieval coverage\n"
+               << "  --adaptive-k                With --target-coverage: k per query from its top-1 similarity\n"
               << "  --dedup-threshold <f>       Deduplication cosine threshold (default: 0.92)\n"
               << "  --max-memories-per-agent <n> Max memories per agent (default: 1000)\n"
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
@@ -70,6 +71,8 @@ Config parse_args(int argc, char* argv[]) {
                 print_usage();
                 std::exit(1);
             }
+        } else if (strcmp(arg, "--adaptive-k") == 0) {
+            cfg.adaptive_k = true;
         } else if (strcmp(arg, "--dedup-threshold") == 0 && i + 1 < argc) {
             cfg.dedup_threshold = std::atof(argv[++i]);
         } else if (strcmp(arg, "--max-memories-per-agent") == 0 && i + 1 < argc) {
@@ -131,9 +134,16 @@ Config parse_args(int argc, char* argv[]) {
         std::exit(1);
     }
 
+    if (cfg.adaptive_k && cfg.target_coverage == 0.0f) {
+        std::cerr << "Error: --adaptive-k requires --target-coverage\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
     if (cfg.target_coverage > 0.0f && !cfg.max_inject_tokens_explicit) {
         const int required = required_inject_tokens(
-            calibrated_top_k(cfg.target_coverage, cfg.decay_mode), cfg.memory_line_chars);
+            max_calibrated_top_k(cfg.target_coverage, cfg.decay_mode, cfg.adaptive_k),
+            cfg.memory_line_chars);
         cfg.max_inject_tokens = std::max(cfg.max_inject_tokens, required);
     }
 

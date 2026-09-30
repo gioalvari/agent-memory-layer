@@ -359,7 +359,7 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
             mem.user_emb.assign(u_ptr, u_ptr + dim);
             mem.assist_emb.assign(a_ptr, a_ptr + dim);
             mem.access_count = entry.access_count;
-            results.push_back({std::move(mem), score});
+            results.push_back({std::move(mem), score, cos_max});
         }
     }
 
