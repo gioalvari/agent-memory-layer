@@ -73,6 +73,7 @@ class Setting:
     line_bytes: int
     oracle: bool = False
     adaptive: tuple[tuple[float, float], tuple[int, int, int]] | None = None
+    floor: int = 0
 
 
 # Deployed 90% Mondrian table for tiebreak ranking (retrieval.h, followup.py):
@@ -88,9 +89,11 @@ SETTINGS = (
     Setting("k4_b400", 4, 400),
     Setting("k5_b400", 5, 400),
     Setting("k8_b400", 8, 400),
+    Setting("k14_b400", 14, 400),
     Setting("k4_b800", 4, 800),
     Setting("k8_b800", 8, 800),
     Setting("adaptive90_b400", 0, 400, adaptive=ADAPTIVE_90),
+    Setting("adaptive90_floor8_b400", 0, 400, adaptive=ADAPTIVE_90, floor=8),
     Setting("k2_b1600", 2, 1600),
     Setting("oracle_b1600", 0, 1600, oracle=True),
 )
@@ -145,7 +148,7 @@ def select(question: EmbeddedQuestion, setting: Setting) -> list[Memory]:
         return [memory for memory in ranked if memory.evidence]
     if setting.adaptive is not None:
         top1 = float(scores[RAW_SCORE][order[0]])
-        return ranked[: adaptive_k(setting.adaptive, top1)]
+        return ranked[: max(adaptive_k(setting.adaptive, top1), setting.floor)]
     return ranked[: setting.k]
 
 

@@ -24,8 +24,12 @@ int main(int argc, char* argv[]) {
     std::string k_desc = "effective_k=" + std::to_string(cfg.top_k);
     if (cfg.target_coverage > 0.0f && cfg.adaptive_k) {
         const auto* table = memorylayer::adaptive_k_table(cfg.target_coverage, cfg.decay_mode);
-        k_desc = "adaptive_k=" + std::to_string(table->k[0]) + "/" +
-                 std::to_string(table->k[1]) + "/" + std::to_string(table->k[2]) +
+        const auto k_at = [&](float top1) {
+            return std::to_string(
+                memorylayer::adaptive_top_k(cfg.target_coverage, cfg.decay_mode, top1));
+        };
+        k_desc = "adaptive_k=" + k_at(table->edge_low) + "/" + k_at(table->edge_high) + "/" +
+                 k_at(1.0f) +
                  " (top-1 similarity <=" + std::to_string(table->edge_low) + ", <=" +
                  std::to_string(table->edge_high) + ", above)";
     } else if (cfg.target_coverage > 0.0f) {

@@ -16,6 +16,7 @@ from conformal_retrieval.followup import (
     gap_policy,
     line_tokens,
     mondrian_edges,
+    mondrian_floor_policy,
     outcome,
     rank_policy,
     truncated_bytes,
@@ -116,3 +117,16 @@ def test_mondrian_edges_split_into_terciles() -> None:
     edges = mondrian_edges([0.0, 1.0, 2.0, 3.0])
     assert len(edges) == 2
     assert list(np.searchsorted(edges, [0.0, 1.5, 3.0])) == [0, 1, 2]
+
+
+def test_mondrian_floor_is_at_least_the_global_k() -> None:
+    """The floored policy is never shallower than the global rank k."""
+    profiles = [
+        make_profile([0.9 - 0.1 * i, 0.1, 0.0], [1, 1, 1], flags)
+        for i, flags in enumerate(
+            [[True, False, False], [False, False, True], [False, True, False]] * 3
+        )
+    ]
+    size_of, global_k = mondrian_floor_policy(profiles, 0.25)
+    assert global_k == 3.0
+    assert all(size_of(p) >= 3 for p in profiles)

@@ -48,7 +48,9 @@ inline int calibrated_top_k(float target_coverage, DecayMode mode) {
 // quantile per tercile, calibrated on the same 467 questions (about 155 per
 // tercile). Queries whose best match is weak get a deeper k, confident ones a
 // shallower k, so coverage is roughly equal across terciles rather than only
-// on average.
+// on average. adaptive_top_k() never goes below the global calibrated k: with
+// a 4-memory tercile k, confident queries lost 5-6 points of end-to-end
+// accuracy, and the floored set still contains both conformal sets.
 struct AdaptiveKTable {
     float edge_low;
     float edge_high;
@@ -82,7 +84,9 @@ inline int adaptive_bin(const AdaptiveKTable& table, float top1_similarity) {
 
 inline int adaptive_top_k(float target_coverage, DecayMode mode, float top1_similarity) {
     const AdaptiveKTable* table = adaptive_k_table(target_coverage, mode);
-    return table ? table->k[adaptive_bin(*table, top1_similarity)] : 0;
+    if (!table) return 0;
+    return std::max(table->k[adaptive_bin(*table, top1_similarity)],
+                    calibrated_top_k(target_coverage, mode));
 }
 
 // Deepest k a coverage policy can request: the calibrated k, or the

@@ -74,7 +74,7 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--decay-days` | `30` | Linear recency horizon (days; decay floors at 0.5) |
 | `--decay-mode` | `tiebreak` | `tiebreak`: preserve cosine ranking and use recency only for near-ties; `legacy`: multiply similarity by decay |
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
-| `--adaptive-k` | off | With `--target-coverage`: choose k per query from its top-1 similarity tercile (Mondrian conformal), e.g. 21 / 7 / 4 at 0.9 |
+| `--adaptive-k` | off | With `--target-coverage`: choose k per query from its top-1 similarity tercile (Mondrian conformal), never below the global calibrated k, e.g. 21 / 8 / 8 at 0.9 |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
@@ -394,11 +394,12 @@ verbatim in an evidence turn, Qwen2.5-7B-Instruct answers correctly with:
 Llama-3.1-8B-Instruct shows the same pattern (5 x 200: 33.2%, 5 x 400: 50.5%,
 8 x 800: 62.6%); see the study for both models.
 
-`--adaptive-k` gives queries with a weak best match more memories and confident
-ones fewer. At 0.9 it equalizes coverage across top-1 similarity terciles
-(91 / 92 / 94% instead of 80 / 93 / 99%) for about 45% more tokens. End to
-end it is within two points of a fixed 8 x 400 on both Qwen2.5-7B and
-Llama-3.1-8B (not significant) for ~24% more prompt tokens, so it is opt-in.
+`--adaptive-k` gives queries with a weak best match more memories, never fewer
+than the global calibrated k. At 0.9 the low-confidence tercile goes from 80%
+to 91% coverage, for ~70% more injected memories on average. End to end it
+gains +1.4 / +3.7 points over a fixed 8 x 400 on Qwen2.5-7B / Llama-3.1-8B,
+but 8 x 800 at similar token cost does better, so it is opt-in: prefer longer
+lines when you have tokens to spend.
 
 Past a few memories, line length matters more than depth. 400 bytes is the
 longest default at which five worst-case lines fit the 2,048-token budget.

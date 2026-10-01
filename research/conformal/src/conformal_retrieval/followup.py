@@ -289,6 +289,19 @@ def mondrian_policy(
     ), float("nan")
 
 
+def mondrian_floor_policy(
+    calibration: Sequence[Profile], alpha: float
+) -> tuple[Callable[[Profile], int], float]:
+    """Use ``max(tercile k, global k)``: never shallower than the global policy.
+
+    The set contains both the Mondrian and the global rank set, so it keeps the
+    marginal guarantee of each.
+    """
+    mondrian, _ = mondrian_policy(calibration, alpha)
+    global_k = rank_quantile([profile.best_rank for profile in calibration], alpha)
+    return (lambda profile: max(mondrian(profile), global_k)), float(global_k)
+
+
 def crc_policy(
     calibration: Sequence[Profile], alpha: float
 ) -> tuple[Callable[[Profile], int], float]:
@@ -309,10 +322,11 @@ POLICIES: dict[str, Policy] = {
     "token_budget": budget_policy,
     "relative_gap": gap_policy,
     "mondrian_top1": mondrian_policy,
+    "mondrian_floor": mondrian_floor_policy,
     "crc_recall": crc_policy,
 }
 
-BINNED_POLICIES = ("rank", "mondrian_top1")
+BINNED_POLICIES = ("rank", "mondrian_top1", "mondrian_floor")
 
 
 def summarize_runs(values: Sequence[float]) -> dict[str, float]:
