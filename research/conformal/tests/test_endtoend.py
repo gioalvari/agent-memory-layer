@@ -111,3 +111,12 @@ def test_adaptive_k_matches_proxy_edges() -> None:
     item = question()
     table = ((0.0, 0.5), (1, 2, 3))
     assert len(select(item, Setting("a", 0, 200, adaptive=table))) == 3
+
+
+def test_adaptive_floor_never_goes_below_the_floor() -> None:
+    """A floor raises confident-query k but leaves deeper terciles alone."""
+    item = question()
+    table = ((0.0, 0.5), (1, 1, 1))
+    assert len(select(item, Setting("f", 0, 200, adaptive=table, floor=2))) == 2
+    table = ((0.0, 0.5), (3, 3, 3))
+    assert len(select(item, Setting("f", 0, 200, adaptive=table, floor=2))) == 3
