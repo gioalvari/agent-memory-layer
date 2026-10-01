@@ -73,11 +73,13 @@ void test_adaptive_k_mapping() {
     // Values from research/conformal followup.py deployed Mondrian calibration.
     assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.50f) == 21);
     assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.6318194f) == 21);  // edge is inclusive
-    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.68f) == 7);
-    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.90f) == 4);
-    assert(adaptive_top_k(0.8f, DecayMode::Tiebreak, 0.90f) == 2);
+    // Mid and high terciles are floored at the global calibrated k.
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.68f) == 8);
+    assert(adaptive_top_k(0.9f, DecayMode::Tiebreak, 0.90f) == 8);
+    assert(adaptive_top_k(0.8f, DecayMode::Tiebreak, 0.90f) == 4);
     assert(adaptive_top_k(0.95f, DecayMode::Tiebreak, 0.10f) == 49);
-    assert(adaptive_top_k(0.95f, DecayMode::Legacy, 0.65f) == 17);
+    assert(adaptive_top_k(0.95f, DecayMode::Tiebreak, 0.90f) == 16);
+    assert(adaptive_top_k(0.95f, DecayMode::Legacy, 0.65f) == 26);
     assert(adaptive_top_k(0.85f, DecayMode::Tiebreak, 0.9f) == 0);
     assert(memorylayer::max_calibrated_top_k(0.9f, DecayMode::Tiebreak, true) == 21);
     assert(memorylayer::max_calibrated_top_k(0.9f, DecayMode::Tiebreak, false) == 8);

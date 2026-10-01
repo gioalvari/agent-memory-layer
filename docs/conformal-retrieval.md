@@ -118,7 +118,12 @@ The deployed table, calibrated once on all 467 questions (155--156 per
 tercile), is available as `--adaptive-k` together with `--target-coverage`.
 Tiebreak edges are 0.632 and 0.715; k per tercile is 9 / 3 / 2 at 80%,
 21 / 7 / 4 at 90% and 49 / 14 / 5 at 95% (legacy: edges 0.607 / 0.697,
-k 20 / 4 / 3, 35 / 8 / 5, 69 / 17 / 7). The injection budget is sized for the
+k 20 / 4 / 3, 35 / 8 / 5, 69 / 17 / 7). The proxy floors each tercile k at the
+global calibrated k (so 21 / 8 / 8 at 90% tiebreak; see the end-to-end section).
+The floored set contains both the Mondrian and the global set, so it keeps both
+marginal guarantees: in the repeated splits, 90% tiebreak coverage is 94.7%
+with terciles 91.1 / 93.6 / 99.4% and 13.9 mean memories (global k: 90.8%,
+8.2; Mondrian alone: 92.5%, 12.2). The injection budget is sized for the
 low-confidence k. The edges are specific to nomic-embed-text; with another
 embedding model the table must be recalibrated. The guarantee per tercile is
 still marginal within the tercile and assumes exchangeability.
@@ -196,7 +201,9 @@ bartowski GGUF) on a subset of settings; results are in
 | 8 x 200 | 41.1% | 35.5% | 818 |
 | 5 x 400 | 53.7% | 50.5% | 832 |
 | 8 x 400 | 55.1% | 53.3% | 1,242 |
+| 14 x 400 | 58.4% | 58.4% | 2,057 |
 | adaptive 90% x 400 | 55.6% | 55.1% | 1,530 |
+| adaptive 90%, floor 8, x 400 | 56.5% | 57.0% | 1,784 |
 | 8 x 800 | 59.8% | 62.6% | 1,887 |
 | evidence only x 1,600 | 66.4% | 65.0% | 806 |
 
@@ -218,12 +225,21 @@ tercile, 400 bytes) is not distinguishable from a fixed 8 x 400 on answers:
 tokens. By top-1 tercile (n = 67 / 63 / 84) it gains on low-confidence queries
 (Qwen 40.3 -> 44.8%, Llama 32.8 -> 44.8%) and loses on high-confidence ones,
 where k drops from 8 to 4 (Qwen 60.7 -> 56.0%, Llama 59.5 -> 53.6%): at-least-one
-evidence coverage is not enough context to answer. The net is about zero, so it
-stays opt-in; a floor on k (e.g. max(adaptive, 8)) is the obvious next variant.
+evidence coverage is not enough context to answer. The net is about zero.
+
+Flooring at the global k, `max(tercile k, 8)`, keeps the low-tercile gain and
+restores the confident terciles (Qwen 44.8 / 63.5 / 60.7%, Llama
+44.8 / 66.7 / 59.5%). Against 8 x 400 it gains +1.4 (-0.5, +3.7) on Qwen and
++3.7 (+0.9, +7.0) on Llama. It is still not a good use of tokens: a fixed
+14 x 400 at similar depth scores +1.9 / +1.4 more (not significant), and
+8 x 800 at similar token cost scores +3.3 (-0.9, +7.9) and +5.6 (+0.9, +10.8)
+more. Spending tokens on line length beats spending them on depth, adaptively
+or not. `--adaptive-k` now uses the floored rule and remains opt-in, for when
+per-confidence coverage matters more than tokens.
 
 The limits are two 7--8B models, one prompt, and substring grading on
 questions whose answer is a short verbatim string. The coverage guarantees
 above are unchanged because they concern ranking, not line length.
 
 Validation: `uv run ruff check .`, `uv run mypy src tests`, and `uv run pytest`
-all pass (22 tests).
+all pass (24 tests).
