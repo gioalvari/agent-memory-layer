@@ -5,7 +5,8 @@
 
 A transparent HTTP proxy that gives LLM agents persistent, searchable memory across sessions — entirely local, zero cloud dependencies.
 
-Built with C++17, llama.cpp embeddings on Apple Silicon Metal, and SQLite vector storage.
+Built with C++17, llama.cpp embeddings (Metal-accelerated on Apple Silicon), and
+SQLite vector storage.
 
 ## How It Works
 
@@ -67,43 +68,66 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 # client = OpenAI(base_url="http://localhost:8800/v1")
 ```
 
-## CLI Options
+## Feature flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--embedding-model` | *(required)* | Path to GGUF embedding model |
-| `--backend` | `http://localhost:8080` | LLM backend URL |
-| `--port` | `8800` | Proxy listen port |
-| `--db` | `memories.sqlite` | SQLite database path |
-| `--top-k` | `5` | Max memories to inject per request |
-| `--hybrid-search` | off | Fuse dense candidates with SQLite FTS5 lexical candidates using reciprocal-rank fusion |
-| `--rrf-k` | `60` | Reciprocal-rank fusion constant used by `--hybrid-search` |
-| `--decay-days` | `30` | Linear recency horizon (days; decay floors at 0.5) |
-| `--decay-mode` | `tiebreak` | `tiebreak`: preserve cosine ranking and use recency only for near-ties; `legacy`: multiply similarity by decay |
-| `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
-| `--adaptive-k` | off | With `--target-coverage`: choose k per query from its top-1 similarity tercile (Mondrian conformal), never below the global calibrated k, e.g. 21 / 8 / 8 at 0.9 |
-| `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
-| `--temporal-boost` | `0` (off) | Additive rank boost for memories created in, or mentioning dates in, the query's UTC time window; does not change the similarity threshold |
-| `--absolute-dates` | off | Prefix injected memory ages with their UTC ISO date, e.g. `[2024-03-03, 2h ago]` |
-| `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
-| `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
-| `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
-| `--compress-memories` | off | Extract query-relevant sentences for overlong injected sides; falls back to head truncation until sentence vectors are available |
-| `--gpu-layers` | `99` | GPU layers for embedding model |
-| `--history-budget` | off | Maximum estimated tokens from non-system conversation history; drops oldest complete turns when exceeded |
-| `--history-trim-ratio` | `0.5` | When history is trimmed, retain approximately this fraction of `--history-budget` to avoid shifting the retained window every turn |
-| `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
-| `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
-| `--extract-facts` | off | Asynchronously extract durable user/project facts after saving a turn |
-| `--fact-model` | triggering model | Model to use for fact extraction |
-| `--max-facts` | `5` | Maximum retrieved facts injected per request |
-| `--fact-queue-size` | `64` | Maximum pending extraction jobs; new jobs are dropped and logged when full |
+`Both` below means `/v1/chat/completions` and `/v1/messages`; `server` options
+configure the process rather than a request endpoint.
+
+| Flag | Default | What it does | Applies to |
+|------|---------|--------------|------------|
+| `--embedding-model <path>` | *(required)* | GGUF embedding-model path | server |
+| `--backend <url>` | `http://localhost:8080` | Upstream LLM backend URL | Both |
+| `--port <n>` | `8800` | Proxy listen port | server |
+| `--db <path>` | `memories.sqlite` | SQLite database path | server |
+| `--top-k <n>` | `5` | Maximum raw memories to retrieve | Both |
+| `--hybrid-search` | off | Fuse dense and FTS5 lexical candidates with RRF | Both |
+| `--rrf-k <n>` | `60` | Reciprocal-rank-fusion constant | Both, with hybrid |
+| `--decay-days <n>` | `30` | Linear recency horizon; decay floors at 0.5 | Both |
+| `--decay-mode <mode>` | `tiebreak` | Use recency for near-ties, or multiply similarity (`legacy`) | Both |
+| `--target-coverage <p>` | off | Use calibrated retrieval depth: `0.8`, `0.9`, or `0.95` | Both |
+| `--adaptive-k` | off | With target coverage, choose k from the top-1-similarity tercile | Both |
+| `--dedup-threshold <f>` | `0.92` | Cosine threshold for merging saved memories | Both, on save |
+| `--max-memories-per-agent <n>` | `1000` | Per-agent memory eviction cap | Both, on save |
+| `--gpu-layers <n>` | `99` | Embedding-model GPU layers | server |
+| `--max-inject-tokens <n>` | `2048` | Memory-block token cap; may rise for target coverage unless explicit | Both |
+| `--memory-line-chars <n>` | `400` | Bytes retained per user/assistant memory side | Both |
+| `--compress-memories` | off | Select query-relevant sentences instead of head truncation | Both |
+| `--admin-token <token>` | none | Require a bearer token for `/admin/*` | admin only |
+| `--memory-ttl-days <n>` | `0` (off) | Delete memories older than N days | Both, on store access |
+| `--similarity-threshold <f>` | `0.3` | Minimum dense cosine similarity for injection | Both |
+| `--max-context-tokens <n>` | `8192` | Total-context guard for injection | Both |
+| `--history-budget <n>` | `0` (off) | Cap non-system history and drop oldest complete turns | chat-completions only |
+| `--history-trim-ratio <f>` | `0.5` | Fraction of history budget retained after trimming | chat-completions only |
+| `--inject-mode <mode>` | `system` | Place memories in `system`, `suffix`, or cached `sticky` mode | Both; sticky falls back to suffix for Messages |
+| `--sticky-cache-entries <n>` | `4096` | Sticky conversation blocks retained in the LRU cache | chat-completions only |
+| `--temporal-boost <f>` | `0` (off) | Add rank boost for matching UTC query windows | Both |
+| `--absolute-dates` | off | Include UTC ISO dates in injected memory lines | Both |
+| `--extract-facts` | off | Asynchronously extract durable user/project facts | Both* |
+| `--fact-model <name>` | triggering model | Model used by fact extraction | Both* |
+| `--max-facts <n>` | `5` | Maximum retrieved facts injected first | Both |
+| `--fact-queue-size <n>` | `64` | Pending fact-extraction jobs before new jobs are dropped | Both* |
+| `--help`, `-h` | n/a | Print usage and exit | server |
 
 ### Fact extraction
 
 Enable `--extract-facts` to send each newly saved exchange to an OpenAI-compatible `/v1/chat/completions` backend on a dedicated background worker. The worker asks for a small JSON list of durable user/project facts, embeds each accepted fact, and stores the latest value per normalized subject/attribute key. A changed value supersedes the older one rather than duplicating it. Facts are retrieved in the same agent namespace as memories and, within `--max-inject-tokens`, are injected first as `Known facts (latest values)` followed by relevant raw turns. Extraction calls go directly to the configured backend, so they are never recursively injected or saved as memories. For `/v1/messages` traffic, set `--fact-model` explicitly; without it, extraction is skipped to avoid using an Anthropic model name with the OpenAI-compatible extraction endpoint.
 
 With `--inject-mode sticky`, requests that retrieve facts use the regular memory-block injection path so the latest facts are present; they do not overwrite sticky-cache entries. Later sticky requests without facts continue to use their existing cached conversation blocks.
+
+`*` Fact extraction always calls an OpenAI-compatible `/v1/chat/completions`
+backend. For `/v1/messages` traffic, it therefore requires an explicit
+`--fact-model`.
+
+## Composition
+
+For each request, the retrieval pipeline is: dense/hybrid retrieval ->
+threshold/conformal selection -> temporal boost (on dense rank, before RRF) ->
+facts first -> sentence compression -> budget. The injection budget is
+`min(max_inject_tokens, max_context_tokens - history)`.
+
+History trimming applies only to Chat Completions. On Messages, `sticky` falls
+back to `suffix`; fact extraction additionally requires an explicit
+`--fact-model` and an OpenAI-compatible backend.
 
 ## Running with Ollama
 
@@ -494,6 +518,7 @@ at-least-one-evidence coverage, and is model-specific.
 It was measured with dense retrieval; `--target-coverage` and `--adaptive-k` still
 select k from the dense top-1 similarity under `--hybrid-search`, but their conformal
 coverage guarantee does not transfer to hybrid ranking.
+Benchmark results for the new flags: see research/conformal/results/FEATURE_EVAL.md
 The guarantee assumes all k memories are injected. Each memory is one line
 whose user and assistant sides are cut to `--memory-line-chars` bytes (400 by
 default, at most 209 estimated tokens per line), so with `--target-coverage`
@@ -541,7 +566,7 @@ in `memories`. At retrieval, sentence vectors are ranked against the already
 computed query vector, selected greedily within the same byte cap, and emitted
 in original order with ` … ` marking skipped spans. Older or still-processing
 memories retain the prior head-truncation behavior, so the query hot path never
-embeds text. **TODO:** measure the end-to-end effect on LongMemEval.
+embeds text.
 
 ### Dual-Embedding Search
 
@@ -613,7 +638,8 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 
 ## Known Limitations
 
-- **macOS / Apple Silicon only**: Metal is forced on in CMake; Linux/CUDA builds are untested.
+- **Platform coverage**: Metal is used on Apple Silicon. Linux CPU builds are in CI,
+  but CUDA and other accelerators are untested.
 - **Two request formats**: memory is applied to OpenAI Chat Completions
   (`/v1/chat/completions`) and Anthropic Messages (`/v1/messages`). Other `/v1/*`
   paths are forwarded unmodified. Anthropic `sticky` uses the documented `suffix`
