@@ -33,10 +33,23 @@ void test_defaults() {
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
     assert(cfg.memory_line_chars == 400);
+    assert(!cfg.extract_facts);
+    assert(cfg.max_facts == 5);
+    assert(cfg.fact_queue_size == 64);
     // Default top-k memories at the default line length fit the default budget.
     assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
            cfg.max_inject_tokens);
     std::cout << "test_defaults PASSED\n";
+}
+
+void test_fact_options() {
+    const char* argv[] = {"memory-layer", "--embedding-model", "m.gguf", "--extract-facts",
+                          "--fact-model", "fact-model", "--max-facts", "3", "--fact-queue-size", "7"};
+    const auto cfg = memorylayer::parse_args(10, const_cast<char**>(argv));
+    assert(cfg.extract_facts && cfg.fact_model == "fact-model" && cfg.max_facts == 3 && cfg.fact_queue_size == 7);
+    const char* bad[] = {"memory-layer", "--embedding-model", "m.gguf", "--fact-queue-size", "0"};
+    assert_parse_fails(bad);
+    std::cout << "test_fact_options PASSED\n";
 }
 
 void test_retrieval_options() {
@@ -145,6 +158,7 @@ int main() {
     test_retrieval_options();
     test_defaults();
     test_custom_values();
+    test_fact_options();
     std::cout << "All config tests PASSED\n";
     return 0;
 }

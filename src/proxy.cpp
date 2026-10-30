@@ -1,6 +1,7 @@
 #include "memorylayer/proxy.h"
 #include "memorylayer/injector.h"
 #include "memorylayer/logger.h"
+#include "memorylayer/fact_extraction.h"
 #include "httplib.h"
 #include "json.hpp"
 #include <iostream>
@@ -17,8 +18,9 @@ namespace memorylayer {
 
 MemoryProxy::MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder)
     : cfg_(cfg), store_(store), embedder_(embedder),
-      sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
+       sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
     saver_thread_ = std::thread(&MemoryProxy::saver_loop, this);
+    if (cfg_.extract_facts) fact_thread_ = std::thread(&MemoryProxy::fact_loop, this);
 }
 
 MemoryProxy::~MemoryProxy() {
@@ -33,7 +35,9 @@ void MemoryProxy::stop() {
 void MemoryProxy::shutdown() {
     stop_ = true;
     save_cv_.notify_all();
+    fact_cv_.notify_all();
     if (saver_thread_.joinable()) saver_thread_.join();
+    if (fact_thread_.joinable()) fact_thread_.join();
 }
 
 bool MemoryProxy::check_admin_auth(const httplib::Request& req, httplib::Response& res) const {
@@ -142,14 +146,19 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         }
     }
 
-    if (sticky_mode) {
+    std::vector<ScoredFact> facts;
+    if (cfg_.extract_facts && cfg_.max_facts > 0) {
+        facts = store_.search_facts(query_emb, agent_id, cfg_.max_facts, cfg_.min_score_threshold);
+    }
+
+    if (sticky_mode && facts.empty()) {
         memories = filter_excluded_memories(memories, sticky_history.shown_memory_ids,
                                             effective_top_k);
     } else if (static_cast<int>(memories.size()) > effective_top_k) {
         memories.erase(memories.begin() + effective_top_k, memories.end());
     }
 
-    if (memories.empty()) {
+    if (memories.empty() && facts.empty()) {
         if (sticky_mode) {
             sticky_cache_.put(last_key, {});
             LOG_INFO("proxy", "Sticky injection: reused blocks=" +
@@ -160,7 +169,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
     std::string context;
     std::vector<int64_t> injected_ids;
-    if (sticky_mode) {
+    if (sticky_mode && facts.empty()) {
         const StickyFormattedContext formatted =
             format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens,
                                                   cfg_.memory_line_chars);
@@ -173,10 +182,10 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                  std::to_string(sticky_history.reused_blocks) + ", new memories=" +
                  std::to_string(injected_ids.size()));
     } else {
-        context = format_memory_context_budgeted(memories,
-                                                 static_cast<double>(std::time(nullptr)),
-                                                 cfg_.max_inject_tokens,
-                                                 cfg_.memory_line_chars);
+        context = format_fact_memory_context_budgeted(facts, memories,
+                                                       static_cast<double>(std::time(nullptr)),
+                                                       cfg_.max_inject_tokens,
+                                                       cfg_.memory_line_chars);
         inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
     }
 
@@ -189,15 +198,17 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         }
     }
 
-    LOG_INFO("proxy", "Injected " + std::to_string(sticky_mode ? injected_ids.size() : memories.size()) + " memories for agent='" + (agent_id.empty() ? "global" : agent_id) + "'");
+    LOG_INFO("proxy", "Injected " + std::to_string(sticky_mode ? injected_ids.size() : memories.size()) +
+             " memories and " + std::to_string(facts.size()) + " facts for agent='" +
+             (agent_id.empty() ? "global" : agent_id) + "'");
 
     return context;
 }
 
 void MemoryProxy::enqueue_save(const std::string& agent_id,
                                 const std::string& user_text,
-                                const std::string& assist_text,
-                                const std::string& embed_text) {
+                                 const std::string& assist_text,
+                                 const std::string& embed_text, const std::string& model) {
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
         if (save_queue_.size() >= 100) {
@@ -205,14 +216,60 @@ void MemoryProxy::enqueue_save(const std::string& agent_id,
             LOG_WARN("proxy", "Save queue full (drops=" + std::to_string(save_drop_count_.load()) + "), dropping oldest");
             save_queue_.pop();
         }
-        save_queue_.push({agent_id, user_text, assist_text, embed_text});
+        save_queue_.push({agent_id, user_text, assist_text, embed_text, model});
     }
     save_cv_.notify_one();
 }
 
+void MemoryProxy::enqueue_fact_extraction(FactExtractionJob job) {
+    if (!cfg_.extract_facts) return;
+    {
+        std::lock_guard<std::mutex> lock(fact_mutex_);
+        if (static_cast<int>(fact_queue_.size()) >= cfg_.fact_queue_size) {
+            ++fact_drop_count_;
+            LOG_WARN("facts", "Fact queue full (drops=" + std::to_string(fact_drop_count_.load()) + "), dropping extraction job");
+            return;
+        }
+        fact_queue_.push(std::move(job));
+    }
+    fact_cv_.notify_one();
+}
+
+void MemoryProxy::fact_loop() {
+    while (true) {
+        FactExtractionJob job;
+        {
+            std::unique_lock<std::mutex> lock(fact_mutex_);
+            fact_cv_.wait(lock, [this] { return stop_ || !fact_queue_.empty(); });
+            if (stop_ && fact_queue_.empty()) return;
+            job = std::move(fact_queue_.front());
+            fact_queue_.pop();
+        }
+        const std::string model = cfg_.fact_model.empty() ? job.model : cfg_.fact_model;
+        if (model.empty()) { LOG_WARN("facts", "Skipping fact extraction without a model name"); continue; }
+        json request = {{"model", model}, {"stream", false}, {"temperature", 0},
+                        {"messages", json::array({{{"role", "user"}, {"content", fact_extraction_prompt(job.user_text, job.assist_text)}}})}};
+        httplib::Client backend(cfg_.backend_url);
+        backend.set_read_timeout(300);
+        backend.set_connection_timeout(10);
+        const auto response = backend.Post("/v1/chat/completions", request.dump(), "application/json");
+        if (!response || response->status != 200) { LOG_WARN("facts", "Fact extraction backend call failed"); continue; }
+        try {
+            const auto response_json = json::parse(response->body);
+            const auto content = response_json["choices"][0]["message"]["content"].get<std::string>();
+            for (const auto& fact : parse_extracted_facts(content)) {
+                const std::string text = fact.subject + " " + fact.attribute + ": " + fact.value;
+                const auto embedding = embedder_.embed(text, EmbedPriority::NORMAL);
+                if (!embedding.empty()) store_.insert_fact(job.agent_id, fact.subject, fact.attribute,
+                                                            fact.value, job.source_memory_id, embedding);
+            }
+        } catch (const std::exception& e) { LOG_WARN("facts", std::string("Invalid extraction response: ") + e.what()); }
+    }
+}
+
 void MemoryProxy::saver_loop() {
     auto last_purge = std::chrono::steady_clock::now();
-    while (!stop_) {
+    while (true) {
         SaveJob job;
         {
             std::unique_lock<std::mutex> lock(save_mutex_);
@@ -238,10 +295,12 @@ void MemoryProxy::saver_loop() {
             int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
             if (dup_id > 0) {
                 store_.touch(dup_id);
+                enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text, job.model, dup_id});
                 LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
             } else {
-                store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
+                const int64_t memory_id = store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
                 store_.evict(job.agent_id);
+                if (memory_id > 0) enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text, job.model, memory_id});
                 LOG_INFO("memory", "Saved new memory for agent='" +
                          (job.agent_id.empty() ? "global" : job.agent_id) + "'");
             }
@@ -574,6 +633,30 @@ setInterval(refresh,10000);
         res.set_content(result.dump(2), "application/json");
     });
 
+    svr.Get("/admin/facts", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
+        const std::string agent_id = req.has_param("agent_id") ? req.get_param_value("agent_id") : "";
+        const bool include_superseded = req.has_param("include_superseded") && req.get_param_value("include_superseded") == "1";
+        int limit = 50;
+        if (req.has_param("limit")) try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        json result = json::array();
+        for (const auto& fact : store_.list_facts(agent_id, include_superseded, limit)) {
+            result.push_back({{"id", fact.id}, {"agent_id", fact.agent_id}, {"subject", fact.subject},
+                              {"attribute", fact.attribute}, {"value", fact.value}, {"key", fact.key},
+                              {"source_memory_id", fact.source_memory_id}, {"created_at", fact.created_at},
+                              {"superseded_by", fact.superseded_by ? json(*fact.superseded_by) : json(nullptr)}});
+        }
+        res.set_content(result.dump(2), "application/json");
+    });
+
+    svr.Delete(R"(/admin/facts/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!check_admin_auth(req, res)) return;
+        try {
+            if (store_.remove_fact(std::stoll(req.matches[1]))) res.set_content(R"({"status":"deleted"})", "application/json");
+            else { res.status = 404; res.set_content(R"({"error":"Fact not found"})", "application/json"); }
+        } catch (...) { res.status = 400; res.set_content(R"({"error":"Invalid fact ID"})", "application/json"); }
+    });
+
     // Admin API: delete a memory
     svr.Delete(R"(/admin/memories/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, res)) return;
@@ -706,7 +789,7 @@ setInterval(refresh,10000);
                     auto resp_json = json::parse(backend_res->body);
                     std::string assist_text = resp_json["choices"][0]["message"]["content"].get<std::string>();
                     std::string save_user = conv_context.empty() ? user_text : conv_context;
-                    enqueue_save(agent_id, save_user, assist_text, user_text);
+                    enqueue_save(agent_id, save_user, assist_text, user_text, body.value("model", ""));
                 } catch (const std::exception& e) {
                     LOG_WARN("proxy", std::string("Failed to parse backend response for memory save: ") + e.what());
                 }
@@ -718,10 +801,11 @@ setInterval(refresh,10000);
             std::string backend_url = cfg_.backend_url;
             std::string mod_body = modified_body;
             std::string save_user = conv_context.empty() ? user_text_copy : conv_context;
+            std::string model = body.value("model", "");
 
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, mod_body, backend_url, agent_id_copy, save_user, user_text_copy]
+                [this, mod_body, backend_url, agent_id_copy, save_user, user_text_copy, model]
                 (size_t /*offset*/, httplib::DataSink& sink) -> bool {
                     httplib::Client backend(backend_url);
                     backend.set_read_timeout(300);
@@ -769,7 +853,7 @@ setInterval(refresh,10000);
 
                     // Save accumulated content to memory after streaming completes
                     if (!accumulated_content.empty() && !save_user.empty()) {
-                        enqueue_save(agent_id_copy, save_user, accumulated_content, user_text_copy);
+                        enqueue_save(agent_id_copy, save_user, accumulated_content, user_text_copy, model);
                     }
 
                     sink.done();

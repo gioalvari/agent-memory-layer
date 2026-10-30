@@ -20,7 +20,10 @@ struct SaveJob {
     std::string user_text;   // full context stored in DB (human-readable)
     std::string assist_text;
     std::string embed_text;  // last user message — what gets embedded for retrieval
+    std::string model;
 };
+
+struct FactExtractionJob { std::string agent_id, user_text, assist_text, model; int64_t source_memory_id = -1; };
 
 class MemoryProxy {
 public:
@@ -44,12 +47,19 @@ private:
     std::queue<SaveJob> save_queue_;
     std::mutex save_mutex_;
     std::condition_variable save_cv_;
+    std::thread fact_thread_;
+    std::queue<FactExtractionJob> fact_queue_;
+    std::mutex fact_mutex_;
+    std::condition_variable fact_cv_;
+    std::atomic<int64_t> fact_drop_count_{0};
 
     void saver_loop();
     void enqueue_save(const std::string& agent_id,
                       const std::string& user_text,
                       const std::string& assist_text,
-                      const std::string& embed_text = "");
+                       const std::string& embed_text = "", const std::string& model = "");
+    void enqueue_fact_extraction(FactExtractionJob job);
+    void fact_loop();
 
     std::atomic<int64_t> save_drop_count_{0};
     StickyCache sticky_cache_;

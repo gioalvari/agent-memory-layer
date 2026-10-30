@@ -29,8 +29,12 @@ static void print_usage() {
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
               << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
-               << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
-               << "  --sticky-cache-entries <n>  Sticky conversation blocks to retain (default: 4096)\n";
+                << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
+                << "  --sticky-cache-entries <n>  Sticky conversation blocks to retain (default: 4096)\n"
+               << "  --extract-facts             Extract durable facts asynchronously (default: off)\n"
+               << "  --fact-model <name>         Model for fact extraction (default: triggering model)\n"
+               << "  --max-facts <n>             Facts to inject per request (default: 5)\n"
+               << "  --fact-queue-size <n>       Pending fact extraction jobs (default: 64)\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -97,6 +101,14 @@ Config parse_args(int argc, char* argv[]) {
             cfg.inject_mode = argv[++i];
         } else if (strcmp(arg, "--sticky-cache-entries") == 0 && i + 1 < argc) {
             cfg.sticky_cache_entries = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--extract-facts") == 0) {
+            cfg.extract_facts = true;
+        } else if (strcmp(arg, "--fact-model") == 0 && i + 1 < argc) {
+            cfg.fact_model = argv[++i];
+        } else if (strcmp(arg, "--max-facts") == 0 && i + 1 < argc) {
+            cfg.max_facts = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--fact-queue-size") == 0 && i + 1 < argc) {
+            cfg.fact_queue_size = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage();
             std::exit(0);
@@ -112,6 +124,12 @@ Config parse_args(int argc, char* argv[]) {
 
     if (cfg.sticky_cache_entries < 0) {
         std::cerr << "Error: --sticky-cache-entries must be non-negative\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (cfg.max_facts < 0 || cfg.fact_queue_size <= 0) {
+        std::cerr << "Error: --max-facts must be non-negative and --fact-queue-size must be positive\n\n";
         print_usage();
         std::exit(1);
     }

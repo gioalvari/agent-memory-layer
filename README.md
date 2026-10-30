@@ -82,6 +82,14 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
+| `--extract-facts` | off | Asynchronously extract durable user/project facts after saving a turn |
+| `--fact-model` | triggering model | Model to use for fact extraction |
+| `--max-facts` | `5` | Maximum retrieved facts injected per request |
+| `--fact-queue-size` | `64` | Maximum pending extraction jobs; new jobs are dropped and logged when full |
+
+### Fact extraction
+
+Enable `--extract-facts` to send each newly saved exchange to the configured backend on a dedicated background worker. The worker asks for a small JSON list of durable user/project facts, embeds each accepted fact, and stores the latest value per normalized subject/attribute key. A changed value supersedes the older one rather than duplicating it. Facts are retrieved in the same agent namespace as memories and, within `--max-inject-tokens`, are injected first as `Known facts (latest values)` followed by relevant raw turns. Extraction calls go directly to the configured backend, so they are never recursively injected or saved as memories.
 
 ## Running with Ollama
 
@@ -174,6 +182,8 @@ Runtime introspection without stopping the server:
 | `/admin/ui` | GET | Embedded web dashboard |
 | `/admin/memories` | GET | List memories (`?agent_id=X&limit=N&offset=M`) |
 | `/admin/memories/:id` | DELETE | Remove a specific memory by ID |
+| `/admin/facts` | GET | List facts (`?agent_id=X&include_superseded=0|1&limit=N`) |
+| `/admin/facts/:id` | DELETE | Remove a specific fact by ID |
 | `/admin/debug/last-injection` | GET | JSON array of last 10 injections, newest first |
 
 ```bash
@@ -445,7 +455,7 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**37 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+**41 total tests** covering: config parsing, memory and fact CRUD/supersession, extraction parsing, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
 
 ## Recommended Embedding Model
 
@@ -472,7 +482,7 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 - **macOS / Apple Silicon only**: Metal is forced on in CMake; Linux/CUDA builds are untested.
 - **OpenAI Chat Completions only**: memory is applied to `/v1/chat/completions`; other `/v1/*` paths (including Anthropic-style `/v1/messages`) are forwarded unmodified.
 - **Brute-force search**: O(n) scan over an in-RAM float cache; fine up to ~10k memories per process, no ANN index.
-- **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
+- **Facts are LLM-extracted**: optional fact extraction handles latest-value supersession, but extracted facts can be incomplete or wrong and are not independently verified.
 - **Injected block is never cached**: retrieved memories change on every request, so the backend always recomputes them. With the default `--inject-mode system` the conversation history after the system prompt is recomputed as well; `--inject-mode suffix` avoids that (see benchmark below).
 - **No encryption at rest**: the SQLite database stores memories in plain text.
 - **Score is not an abstention signal**: retrieval score has AUROC 0.56 for that use case.

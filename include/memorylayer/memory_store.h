@@ -28,6 +28,24 @@ struct ScoredMemory {
     float similarity = 0.0f;  // raw max(cos user, cos assistant), no boost or decay
 };
 
+struct Fact {
+    int64_t id = -1;
+    std::string agent_id;
+    std::string subject;
+    std::string attribute;
+    std::string value;
+    std::string key;
+    int64_t source_memory_id = -1;
+    double created_at = 0;
+    std::optional<int64_t> superseded_by;
+    std::vector<float> embedding;
+};
+
+struct ScoredFact { Fact fact; float similarity = 0.0f; };
+
+std::string normalize_fact_component(const std::string& value);
+std::string make_fact_key(const std::string& subject, const std::string& attribute);
+
 class MemoryStore {
 public:
     explicit MemoryStore(const std::string& db_path, int max_per_agent = 1000, int max_global = 5000);
@@ -65,6 +83,15 @@ public:
         std::vector<std::pair<std::string, int>> per_agent_counts;
     };
     Stats get_stats() const;
+    int64_t insert_fact(const std::string& agent_id, const std::string& subject,
+                        const std::string& attribute, const std::string& value,
+                        int64_t source_memory_id, const std::vector<float>& embedding);
+    std::vector<ScoredFact> search_facts(const std::vector<float>& query_emb,
+                                         const std::string& agent_id, int top_k,
+                                         float min_score) const;
+    std::vector<Fact> list_facts(const std::string& agent_id, bool include_superseded,
+                                 int limit = 50) const;
+    bool remove_fact(int64_t fact_id);
 
 private:
     sqlite3* db_ = nullptr;
@@ -88,8 +115,11 @@ private:
     int emb_dim_ = 0;
     mutable int holes_count_ = 0;   // entries erased from cache_ but not yet recompacted
     mutable std::mutex cache_mutex_;
+    mutable std::mutex facts_mutex_;
+    std::vector<Fact> facts_cache_;
 
     void load_cache();
+    void load_facts_cache();
     void recompact_embeddings();
     bool should_recompact() const;  // caller must hold cache_mutex_
     void add_to_cache(int64_t id, const std::string& agent_id, double created_at,

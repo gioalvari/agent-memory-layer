@@ -268,6 +268,22 @@ void test_admin_memories_pagination() {
     std::cout << "test_admin_memories_pagination PASSED\n";
 }
 
+void test_admin_facts_endpoints(TestProxy& proxy) {
+    const std::vector<float> embedding(4, 0.5f);
+    const auto id = proxy.store().insert_fact("test-agent", "Project", "language", "C++", 1, embedding);
+    assert(id > 0);
+    httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
+    auto listed = cli.Get("/admin/facts?agent_id=test-agent&include_superseded=0&limit=5");
+    assert(listed && listed->status == 200);
+    const auto facts = json::parse(listed->body);
+    assert(facts.size() == 1 && facts[0]["value"] == "C++");
+    auto deleted = cli.Delete("/admin/facts/" + std::to_string(id));
+    assert(deleted && deleted->status == 200);
+    auto missing = cli.Delete("/admin/facts/" + std::to_string(id));
+    assert(missing && missing->status == 404);
+    std::cout << "test_admin_facts_endpoints PASSED\n";
+}
+
 // --------------- Main ---------------
 int main() {
     MockBackend backend;
@@ -291,6 +307,7 @@ int main() {
     test_delete_nonexistent_returns_404();
     test_passthrough_other_v1_endpoints();
     test_admin_memories_pagination();
+    test_admin_facts_endpoints(proxy);
 
     proxy.stop();
     backend.stop();

@@ -15,6 +15,10 @@ add_executable(test_injector test_injector.cpp ../src/injector.cpp)
 target_include_directories(test_injector PRIVATE ../include ../deps)
 add_test(NAME test_injector COMMAND test_injector)
 
+add_executable(test_fact_extraction test_fact_extraction.cpp ../src/fact_extraction.cpp)
+target_include_directories(test_fact_extraction PRIVATE ../include ../deps)
+add_test(NAME test_fact_extraction COMMAND test_fact_extraction)
+
 add_executable(test_config test_config.cpp ../src/config.cpp)
 target_include_directories(test_config PRIVATE ../include ../deps)
 add_test(NAME test_config COMMAND test_config)
@@ -51,6 +55,7 @@ add_executable(test_integration test_integration.cpp
     ../src/injector.cpp
     ../src/sticky.cpp
     ../src/config.cpp
+    ../src/fact_extraction.cpp
 )
 target_include_directories(test_integration PRIVATE
     ../include
@@ -83,6 +88,6 @@ if(APPLE)
     )
 endif()
 
-foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_retrieval test_integration)
+foreach(t test_memory_store test_injector test_fact_extraction test_config test_sticky test_cosine test_scoring test_retrieval test_integration)
     memorylayer_test_asserts(${t})
 endforeach()

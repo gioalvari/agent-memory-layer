@@ -13,7 +13,11 @@ std::string format_memory_context(const std::vector<ScoredMemory>& memories, dou
 int estimate_tokens(const std::string& text);
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
                                            double now_unix, int max_tokens,
-                                           int line_chars = kDefaultMemoryLineChars);
+                                            int line_chars = kDefaultMemoryLineChars);
+std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& facts,
+                                                const std::vector<ScoredMemory>& memories,
+                                                double now_unix, int max_tokens,
+                                                int line_chars = kDefaultMemoryLineChars);
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched

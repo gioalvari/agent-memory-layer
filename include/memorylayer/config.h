@@ -36,6 +36,10 @@ struct Config {
     // re-injects prior cached blocks so the complete backend prompt stays stable.
     std::string inject_mode = "system";
     int sticky_cache_entries = 4096;
+    bool extract_facts = false;
+    std::string fact_model;
+    int max_facts = 5;
+    int fact_queue_size = 64;
 };
 
 Config parse_args(int argc, char* argv[]);
