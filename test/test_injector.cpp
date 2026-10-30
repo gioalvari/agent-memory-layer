@@ -22,6 +22,19 @@ void test_format_memory_line() {
     std::cout << "test_format_memory_line PASSED\n";
 }
 
+void test_format_memory_line_with_absolute_date() {
+    memorylayer::ScoredMemory sm;
+    sm.memory.user_text = "Question";
+    sm.memory.assist_text = "Answer";
+    sm.memory.created_at = 1709424000.0;  // 2024-03-03 UTC
+    const auto line = memorylayer::format_memory_line(sm, sm.memory.created_at + 7200,
+                                                       400, true);
+    assert(line.find("[2024-03-03, 2h ago]") != std::string::npos);
+    const auto default_line = memorylayer::format_memory_line(sm, sm.memory.created_at + 7200);
+    assert(default_line.find("2024-03-03") == std::string::npos);
+    std::cout << "test_format_memory_line_with_absolute_date PASSED\n";
+}
+
 void test_format_memory_context_empty() {
     std::vector<memorylayer::ScoredMemory> empty;
     auto ctx = memorylayer::format_memory_context(empty, 0.0);
@@ -170,6 +183,7 @@ int main() {
     test_inject_suffix_without_user_falls_back();
     test_parse_inject_mode();
     test_format_memory_line();
+    test_format_memory_line_with_absolute_date();
     test_format_memory_context_empty();
     test_inject_with_existing_system();
     test_inject_without_system();

@@ -21,7 +21,9 @@ MemoryStore::MemoryStore(const std::string& db_path, int max_per_agent, int max_
     }
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA foreign_keys=ON;", nullptr, nullptr, nullptr);
     init_schema();
+    backfill_memory_dates();
     load_cache();
 }
 
@@ -44,6 +46,12 @@ void MemoryStore::init_schema() {
         );
         CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
         CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        CREATE TABLE IF NOT EXISTS memory_dates (
+            memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            day       INTEGER NOT NULL,
+            PRIMARY KEY (memory_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_dates_day ON memory_dates(day);
     )";
     char* err = nullptr;
     sqlite3_exec(db_, sql, nullptr, nullptr, &err);
@@ -52,6 +60,42 @@ void MemoryStore::init_schema() {
         sqlite3_free(err);
         throw std::runtime_error("Schema init failed: " + msg);
     }
+}
+
+void MemoryStore::store_memory_dates(int64_t memory_id, const std::vector<int64_t>& days) {
+    const char* sql = "INSERT OR IGNORE INTO memory_dates (memory_id, day) VALUES (?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    for (const int64_t day : days) {
+        sqlite3_bind_int64(stmt, 1, memory_id);
+        sqlite3_bind_int64(stmt, 2, day);
+        sqlite3_step(stmt);
+        sqlite3_reset(stmt);
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MemoryStore::backfill_memory_dates() {
+    const char* sql = R"(
+        SELECT m.id, m.created_at, m.user_text, m.assist_text
+        FROM memories m
+        WHERE NOT EXISTS (SELECT 1 FROM memory_dates d WHERE d.memory_id = m.id)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const int64_t id = sqlite3_column_int64(stmt, 0);
+        const double created_at = sqlite3_column_double(stmt, 1);
+        const char* user = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* assist = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        std::vector<int64_t> days = extract_mentioned_days(user ? user : "", created_at);
+        const auto assistant_days = extract_mentioned_days(assist ? assist : "", created_at);
+        days.insert(days.end(), assistant_days.begin(), assistant_days.end());
+        std::sort(days.begin(), days.end());
+        days.erase(std::unique(days.begin(), days.end()), days.end());
+        store_memory_dates(id, days);
+    }
+    sqlite3_finalize(stmt);
 }
 
 void MemoryStore::load_cache() {
@@ -75,6 +119,16 @@ void MemoryStore::load_cache() {
         entry.assist_text = at ? at : "";
         entry.access_count = sqlite3_column_int(stmt, 7);
 
+        sqlite3_stmt* dates = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT day FROM memory_dates WHERE memory_id = ?", -1,
+                               &dates, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(dates, 1, entry.id);
+            while (sqlite3_step(dates) == SQLITE_ROW) {
+                entry.mentioned_days.push_back(sqlite3_column_int64(dates, 0));
+            }
+            sqlite3_finalize(dates);
+        }
+
         const float* u_blob = reinterpret_cast<const float*>(sqlite3_column_blob(stmt, 5));
         int u_size = sqlite3_column_bytes(stmt, 5) / static_cast<int>(sizeof(float));
         const float* a_blob = reinterpret_cast<const float*>(sqlite3_column_blob(stmt, 6));
@@ -94,8 +148,9 @@ void MemoryStore::load_cache() {
 
 void MemoryStore::add_to_cache(int64_t id, const std::string& agent_id, double created_at,
                                const std::string& user_text, const std::string& assist_text,
-                               int access_count,
-                               const std::vector<float>& user_emb, const std::vector<float>& assist_emb) {
+                                int access_count,
+                                const std::vector<float>& user_emb, const std::vector<float>& assist_emb,
+                                std::vector<int64_t> mentioned_days) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     if (emb_dim_ == 0 && !user_emb.empty()) emb_dim_ = static_cast<int>(user_emb.size());
 
@@ -105,6 +160,7 @@ void MemoryStore::add_to_cache(int64_t id, const std::string& agent_id, double c
     entry.created_at = created_at;
     entry.user_text = user_text;
     entry.assist_text = assist_text;
+    entry.mentioned_days = std::move(mentioned_days);
     entry.access_count = access_count;
     entry.user_emb_offset = static_cast<int>(embeddings_.size());
     embeddings_.insert(embeddings_.end(), user_emb.begin(), user_emb.end());
@@ -119,9 +175,10 @@ static double now_unix() {
 
 int64_t MemoryStore::insert(const std::string& agent_id,
                             const std::string& user_text,
-                            const std::string& assist_text,
-                            const std::vector<float>& user_emb,
-                            const std::vector<float>& assist_emb) {
+                             const std::string& assist_text,
+                             const std::vector<float>& user_emb,
+                             const std::vector<float>& assist_emb,
+                             std::optional<double> created_at) {
     const char* sql = R"(
         INSERT INTO memories (agent_id, created_at, updated_at, user_text, assist_text, user_emb, assist_emb)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -139,7 +196,7 @@ int64_t MemoryStore::insert(const std::string& agent_id,
         sqlite3_bind_text(stmt, 1, agent_id.c_str(), -1, SQLITE_TRANSIENT);
     }
 
-    double ts = now_unix();
+    const double ts = created_at.value_or(now_unix());
     sqlite3_bind_double(stmt, 2, ts);
     sqlite3_bind_double(stmt, 3, ts);
     sqlite3_bind_text(stmt, 4, user_text.c_str(), -1, SQLITE_TRANSIENT);
@@ -156,7 +213,14 @@ int64_t MemoryStore::insert(const std::string& agent_id,
     int64_t id = sqlite3_last_insert_rowid(db_);
     sqlite3_finalize(stmt);
 
-    add_to_cache(id, agent_id, ts, user_text, assist_text, 1, user_emb, assist_emb);
+    std::vector<int64_t> days = extract_mentioned_days(user_text, ts);
+    const auto assistant_days = extract_mentioned_days(assist_text, ts);
+    days.insert(days.end(), assistant_days.begin(), assistant_days.end());
+    std::sort(days.begin(), days.end());
+    days.erase(std::unique(days.begin(), days.end()), days.end());
+    store_memory_dates(id, days);
+    add_to_cache(id, agent_id, ts, user_text, assist_text, 1, user_emb, assist_emb,
+                 std::move(days));
 
     return id;
 }
@@ -244,30 +308,29 @@ void MemoryStore::evict(const std::string& agent_id) {
     }
     sqlite3_finalize(id_stmt);
 
-    // Delete from SQLite using the same weighted ordering
-    const char* sql = agent_id.empty()
-        ? "DELETE FROM memories WHERE id IN"
-          " (SELECT id FROM memories WHERE agent_id IS NULL"
-          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?)"
-        : "DELETE FROM memories WHERE id IN"
-          " (SELECT id FROM memories WHERE agent_id = ?"
-          " ORDER BY (updated_at + 86400.0 * CAST(access_count AS REAL)) ASC LIMIT ?)";
+    sqlite3_stmt* dates_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM memory_dates WHERE memory_id = ?", -1,
+                           &dates_stmt, nullptr) == SQLITE_OK) {
+        for (const int64_t id : ids_to_remove) {
+            sqlite3_bind_int64(dates_stmt, 1, id);
+            sqlite3_step(dates_stmt);
+            sqlite3_reset(dates_stmt);
+        }
+        sqlite3_finalize(dates_stmt);
+    }
 
     sqlite3_stmt* stmt = nullptr;
-    rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, "DELETE FROM memories WHERE id = ?", -1, &stmt, nullptr) !=
+        SQLITE_OK) {
         std::cerr << "[store] evict delete prepare failed: " << sqlite3_errmsg(db_) << "\n";
         return;
     }
-    if (agent_id.empty()) {
-        sqlite3_bind_int(stmt, 1, to_delete);
-    } else {
-        sqlite3_bind_text(stmt, 1, agent_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 2, to_delete);
-    }
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_DONE) {
-        std::cerr << "[store] evict delete step failed: " << sqlite3_errmsg(db_) << "\n";
+    for (const int64_t id : ids_to_remove) {
+        sqlite3_bind_int64(stmt, 1, id);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::cerr << "[store] evict delete step failed: " << sqlite3_errmsg(db_) << "\n";
+        }
+        sqlite3_reset(stmt);
     }
     sqlite3_finalize(stmt);
 
@@ -306,8 +369,11 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
                                                int top_k,
                                                float min_score,
                                                int decay_days,
-                                               float agent_boost,
-                                               DecayMode decay_mode) const {
+                                                float agent_boost,
+                                                DecayMode decay_mode,
+                                                std::optional<TemporalWindow> temporal_window,
+                                                float temporal_boost,
+                                                std::optional<double> supplied_now) const {
     std::lock_guard<std::mutex> lock(cache_mutex_);
 
     // Normalize the query once so dot_product == cosine similarity against unit stored vectors.
@@ -319,7 +385,7 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
         if (norm > 0.0f) for (float& v : q) v /= norm;
     }
 
-    double now = now_unix();
+    const double now = supplied_now.value_or(now_unix());
     int dim = static_cast<int>(q.size());
 
     std::vector<ScoredMemory> results;
@@ -344,7 +410,7 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
         const bool same_agent = !entry.agent_id.empty() && entry.agent_id == agent_id;
         const float threshold_score = similarity_score(cos_max, same_agent, agent_boost);
         const float score = rank_score(cos_max, age_hours, decay_days, same_agent,
-                                       agent_boost, decay_mode);
+                                        agent_boost, decay_mode);
 
         // Keep threshold semantics on the cosine scale; tiebreak recency must
         // not make an otherwise below-threshold memory eligible for injection.
@@ -359,7 +425,22 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
             mem.user_emb.assign(u_ptr, u_ptr + dim);
             mem.assist_emb.assign(a_ptr, a_ptr + dim);
             mem.access_count = entry.access_count;
-            results.push_back({std::move(mem), score, cos_max});
+            bool temporal_match = false;
+            if (temporal_window) {
+                const int64_t created_day = utc_day(entry.created_at);
+                temporal_match = created_day >= temporal_window->start_day &&
+                                 created_day < temporal_window->end_day;
+                if (!temporal_match) {
+                    temporal_match = std::any_of(entry.mentioned_days.begin(),
+                                                 entry.mentioned_days.end(),
+                                                 [&temporal_window](int64_t day) {
+                        return day >= temporal_window->start_day &&
+                               day < temporal_window->end_day;
+                    });
+                }
+            }
+            results.push_back({std::move(mem), score + (temporal_match ? temporal_boost : 0.0f),
+                               cos_max});
         }
     }
 
@@ -435,6 +516,13 @@ std::vector<Memory> MemoryStore::list_memories(const std::string& agent_id, int 
 }
 
 bool MemoryStore::remove(int64_t memory_id) {
+    sqlite3_stmt* dates_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM memory_dates WHERE memory_id = ?", -1,
+                           &dates_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(dates_stmt, 1, memory_id);
+        sqlite3_step(dates_stmt);
+        sqlite3_finalize(dates_stmt);
+    }
     const char* sql = "DELETE FROM memories WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -534,11 +622,20 @@ void MemoryStore::purge_expired(int ttl_days) {
     const char* del_sql = "DELETE FROM memories WHERE id = ?;";
     sqlite3_stmt* del_stmt = nullptr;
     if (sqlite3_prepare_v2(db_, del_sql, -1, &del_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_stmt* dates_stmt = nullptr;
+        sqlite3_prepare_v2(db_, "DELETE FROM memory_dates WHERE memory_id = ?", -1,
+                           &dates_stmt, nullptr);
         for (int64_t id : to_delete) {
+            if (dates_stmt) {
+                sqlite3_bind_int64(dates_stmt, 1, id);
+                sqlite3_step(dates_stmt);
+                sqlite3_reset(dates_stmt);
+            }
             sqlite3_bind_int64(del_stmt, 1, id);
             sqlite3_step(del_stmt);
             sqlite3_reset(del_stmt);
         }
+        if (dates_stmt) sqlite3_finalize(dates_stmt);
         sqlite3_finalize(del_stmt);
     }
 

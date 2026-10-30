@@ -1,5 +1,6 @@
 #pragma once
 #include "memorylayer/retrieval.h"
+#include "memorylayer/temporal.h"
 #include <string>
 #include <vector>
 #include <optional>
@@ -38,17 +39,21 @@ public:
 
     int64_t insert(const std::string& agent_id,
                    const std::string& user_text,
-                   const std::string& assist_text,
-                   const std::vector<float>& user_emb,
-                   const std::vector<float>& assist_emb);
+                    const std::string& assist_text,
+                    const std::vector<float>& user_emb,
+                    const std::vector<float>& assist_emb,
+                    std::optional<double> created_at = std::nullopt);
 
     std::vector<ScoredMemory> search(const std::vector<float>& query_emb,
                                      const std::string& agent_id,
                                      int top_k,
                                       float min_score,
                                       int decay_days,
-                                      float agent_boost,
-                                      DecayMode decay_mode = DecayMode::Tiebreak) const;
+                                       float agent_boost,
+                                       DecayMode decay_mode = DecayMode::Tiebreak,
+                                       std::optional<TemporalWindow> temporal_window = std::nullopt,
+                                       float temporal_boost = 0.0f,
+                                       std::optional<double> now_unix = std::nullopt) const;
 
     int64_t find_duplicate(const std::vector<float>& user_emb, float threshold, const std::string& agent_id = "") const;
 
@@ -72,13 +77,15 @@ private:
     int max_global_;
     void init_schema();
 
-    // RAM vector cache for fast search
+    // RAM vector cache for fast search. mentioned_days contains UTC epoch days
+    // extracted at save time and supports temporal ranking without DB reads.
     struct CachedEntry {
         int64_t id;
         std::string agent_id;
         double created_at;
         std::string user_text;
         std::string assist_text;
+        std::vector<int64_t> mentioned_days;
         int access_count;
         int user_emb_offset;   // offset into embeddings_ vector
         int assist_emb_offset; // offset into embeddings_ vector
@@ -94,8 +101,11 @@ private:
     bool should_recompact() const;  // caller must hold cache_mutex_
     void add_to_cache(int64_t id, const std::string& agent_id, double created_at,
                       const std::string& user_text, const std::string& assist_text,
-                      int access_count,
-                      const std::vector<float>& user_emb, const std::vector<float>& assist_emb);
+                       int access_count,
+                       const std::vector<float>& user_emb, const std::vector<float>& assist_emb,
+                       std::vector<int64_t> mentioned_days);
+    void backfill_memory_dates();
+    void store_memory_dates(int64_t memory_id, const std::vector<int64_t>& days);
 };
 
 } // namespace memorylayer

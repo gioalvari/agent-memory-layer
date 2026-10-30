@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstdio>
 #include <vector>
+#include <sqlite3.h>
 
 static std::vector<float> make_emb(float val) {
     return std::vector<float>(768, val);
@@ -75,10 +76,50 @@ void test_eviction_lru_preserves_hot_memories() {
     std::cout << "test_eviction_lru_preserves_hot_memories PASSED\n";
 }
 
+void test_temporal_boost_and_date_cleanup() {
+    std::remove("test_temporal_store.sqlite");
+    memorylayer::MemoryStore store("test_temporal_store.sqlite");
+    const double now = 1709596800.0;  // 2024-03-05 UTC
+    const std::vector<float> query = {1.0f, 0.0f};
+    const std::vector<float> stronger = {1.0f, 0.0f};
+    const std::vector<float> weaker = {0.8f, 0.6f};
+    const int64_t old_id = store.insert("agent", "old", "no date", stronger, stronger,
+                                        now - 20 * 86400.0);
+    const int64_t dated_id = store.insert("agent", "new", "Planned for March 3, 2024.",
+                                          weaker, weaker, now - 20 * 86400.0);
+
+    const memorylayer::TemporalWindow window{memorylayer::utc_day(now) - 2,
+                                               memorylayer::utc_day(now) - 1};
+    const auto unboosted = store.search(query, "agent", 2, 0.3f, 30, 1.0f,
+                                        memorylayer::DecayMode::Tiebreak, window, 0.0f, now);
+    const auto boosted = store.search(query, "agent", 2, 0.3f, 30, 1.0f,
+                                      memorylayer::DecayMode::Tiebreak, window, 0.3f, now);
+    assert(unboosted.size() == 2 && unboosted[0].memory.id == old_id);
+    assert(boosted.size() == 2 && boosted[0].memory.id == dated_id);
+    // Boost ranks only threshold-eligible candidates; the 0.8 match stays excluded.
+    const auto thresholded = store.search(query, "agent", 2, 0.9f, 30, 1.0f,
+                                          memorylayer::DecayMode::Tiebreak, window, 1.0f, now);
+    assert(thresholded.size() == 1 && thresholded[0].memory.id == old_id);
+
+    assert(store.remove(dated_id));
+    sqlite3* db = nullptr;
+    assert(sqlite3_open("test_temporal_store.sqlite", &db) == SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    assert(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM memory_dates WHERE memory_id = ?", -1,
+                              &stmt, nullptr) == SQLITE_OK);
+    sqlite3_bind_int64(stmt, 1, dated_id);
+    assert(sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 0);
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    std::remove("test_temporal_store.sqlite");
+    std::cout << "test_temporal_boost_and_date_cleanup PASSED\n";
+}
+
 int main() {
     test_insert_and_count();
     test_eviction();
     test_eviction_lru_preserves_hot_memories();
+    test_temporal_boost_and_date_cleanup();
     std::cout << "All memory_store tests PASSED\n";
     return 0;
 }

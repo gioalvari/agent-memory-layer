@@ -22,6 +22,10 @@ struct Config {
     int gpu_layers = 99;
     float min_score_threshold = 0.3f;
     float agent_boost = 1.2f;
+    // Add this amount to rank (never threshold similarity) for a temporal match.
+    float temporal_boost = 0.0f;
+    // Include a UTC YYYY-MM-DD date before the relative age in injected lines.
+    bool absolute_dates = false;
     int max_inject_tokens = 2048;  // Max tokens for injected memory context
     // True when --max-inject-tokens was given; otherwise --target-coverage may
     // raise the budget so that all calibrated memories fit.

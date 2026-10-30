@@ -8,12 +8,15 @@
 namespace memorylayer {
 
 std::string format_memory_line(const ScoredMemory& mem, double now_unix,
-                               int max_chars = kDefaultMemoryLineChars);
-std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix);
+                                int max_chars = kDefaultMemoryLineChars,
+                                bool absolute_dates = false);
+std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix,
+                                  bool absolute_dates = false);
 int estimate_tokens(const std::string& text);
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                           double now_unix, int max_tokens,
-                                           int line_chars = kDefaultMemoryLineChars);
+                                            double now_unix, int max_tokens,
+                                            int line_chars = kDefaultMemoryLineChars,
+                                            bool absolute_dates = false);
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched

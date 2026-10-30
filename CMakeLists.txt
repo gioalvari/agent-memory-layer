@@ -21,6 +21,7 @@ target_compile_options(sqlite3 PRIVATE -w)
 add_executable(memory-layer
     src/main.cpp
     src/config.cpp
+    src/temporal.cpp
     src/memory_store.cpp
     src/embedding.cpp
     src/injector.cpp

@@ -33,6 +33,8 @@ void test_defaults() {
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
     assert(cfg.memory_line_chars == 400);
+    assert(cfg.temporal_boost == 0.0f);
+    assert(!cfg.absolute_dates);
     // Default top-k memories at the default line length fit the default budget.
     assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
            cfg.max_inject_tokens);
@@ -140,8 +142,22 @@ void test_inject_mode() {
     std::cout << "test_inject_mode PASSED\n";
 }
 
+void test_temporal_options() {
+    const char* argv[] = {"memory-layer", "--embedding-model", "m.gguf",
+                          "--temporal-boost", "0.15", "--absolute-dates"};
+    const auto cfg = memorylayer::parse_args(6, const_cast<char**>(argv));
+    assert(cfg.temporal_boost == 0.15f);
+    assert(cfg.absolute_dates);
+
+    const char* invalid[] = {"memory-layer", "--embedding-model", "m.gguf",
+                             "--temporal-boost", "-1"};
+    assert_parse_fails(invalid);
+    std::cout << "test_temporal_options PASSED\n";
+}
+
 int main() {
     test_inject_mode();
+    test_temporal_options();
     test_retrieval_options();
     test_defaults();
     test_custom_values();
