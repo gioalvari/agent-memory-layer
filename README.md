@@ -79,6 +79,7 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
 | `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
+| `--compress-memories` | off | Extract query-relevant sentences for overlong injected sides; falls back to head truncation until sentence vectors are available |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
@@ -404,6 +405,19 @@ lines when you have tokens to spend.
 Past a few memories, line length matters more than depth. 400 bytes is the
 longest default at which five worst-case lines fit the 2,048-token budget.
 
+### Query-aware sentence compression
+
+`--compress-memories` preserves the existing per-side byte cap, but replaces
+head truncation for overlong memories with extractive compression. At save time
+the proxy deterministically splits each side into UTF-8-safe sentence, bullet,
+and code-block units and embeds them at normal background priority. It stores
+only byte offsets and vectors in `memory_sentences`; the canonical text remains
+in `memories`. At retrieval, sentence vectors are ranked against the already
+computed query vector, selected greedily within the same byte cap, and emitted
+in original order with ` … ` marking skipped spans. Older or still-processing
+memories retain the prior head-truncation behavior, so the query hot path never
+embeds text. **TODO:** measure the end-to-end effect on LongMemEval.
+
 ### Dual-Embedding Search
 
 Each memory stores **two** embedding vectors:
@@ -445,7 +459,7 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**37 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+**61 total tests** covering: config parsing, memory CRUD and sentence-row cleanup, cosine similarity, query-aware sentence compression, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
 
 ## Recommended Embedding Model
 
