@@ -43,6 +43,20 @@ enum class InjectMode {
 InjectMode parse_inject_mode(const std::string& mode);
 
 void inject_memories(nlohmann::json& messages, const std::string& memory_context,
-                     InjectMode mode = InjectMode::System);
+                      InjectMode mode = InjectMode::System);
+
+// Returns all text represented by an Anthropic content value. Tool-result
+// content may itself be either a string or an array of content blocks.
+std::string extract_anthropic_text(const nlohmann::json& content);
+
+// Extracts text from the final user turn in an Anthropic Messages request.
+std::string extract_anthropic_last_user_message(const nlohmann::json& messages);
+
+// Injects a memory block into an Anthropic Messages request body. Sticky mode
+// intentionally uses suffix placement because OpenAI sticky history blocks do
+// not map to Anthropic's separate top-level system field.
+void inject_anthropic_memories(nlohmann::json& body,
+                               const std::string& memory_context,
+                               InjectMode mode = InjectMode::System);
 
 } // namespace memorylayer

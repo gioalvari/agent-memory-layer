@@ -345,7 +345,7 @@ InjectMode parse_inject_mode(const std::string& mode) {
 }
 
 void inject_memories(nlohmann::json& messages, const std::string& memory_context,
-                     InjectMode mode) {
+                      InjectMode mode) {
     if (memory_context.empty()) return;
 
     if (mode == InjectMode::Suffix || mode == InjectMode::Sticky) {
@@ -376,6 +376,65 @@ void inject_memories(nlohmann::json& messages, const std::string& memory_context
     } else {
         nlohmann::json sys_msg = {{"role", "system"}, {"content", memory_context}};
         messages.insert(messages.begin(), sys_msg);
+    }
+}
+
+std::string extract_anthropic_text(const nlohmann::json& content) {
+    if (content.is_string()) return content.get<std::string>();
+    if (!content.is_array()) return "";
+
+    std::string text;
+    for (const auto& block : content) {
+        if (!block.is_object()) continue;
+        if (block.value("type", "") == "text" && block["text"].is_string()) {
+            text += block["text"].get<std::string>();
+        } else if (block.value("type", "") == "tool_result" &&
+                   block.contains("content")) {
+            text += extract_anthropic_text(block["content"]);
+        }
+    }
+    return text;
+}
+
+std::string extract_anthropic_last_user_message(const nlohmann::json& messages) {
+    if (!messages.is_array()) return "";
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        if (it->value("role", "") == "user" && it->contains("content")) {
+            return extract_anthropic_text((*it)["content"]);
+        }
+    }
+    return "";
+}
+
+void inject_anthropic_memories(nlohmann::json& body,
+                               const std::string& memory_context,
+                               InjectMode mode) {
+    if (memory_context.empty()) return;
+
+    if (mode == InjectMode::Suffix || mode == InjectMode::Sticky) {
+        auto& messages = body["messages"];
+        for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+            if (it->value("role", "") != "user") continue;
+            auto& content = (*it)["content"];
+            if (content.is_string()) {
+                content = memory_context + "\n\n" + content.get<std::string>();
+            } else if (content.is_array()) {
+                const nlohmann::json memory_block = {
+                    {"type", "text"}, {"text", memory_context}
+                };
+                content.insert(content.begin(), memory_block);
+            }
+            return;
+        }
+        return;
+    }
+
+    if (!body.contains("system")) {
+        body["system"] = memory_context;
+    } else if (body["system"].is_string()) {
+        body["system"] = body["system"].get<std::string>() + "\n\n" + memory_context;
+    } else if (body["system"].is_array()) {
+        body["system"].push_back({{"type", "text"}, {"text", memory_context}});
     }
 }
 

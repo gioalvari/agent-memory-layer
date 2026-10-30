@@ -83,6 +83,37 @@ public:
                 }
             });
 
+            svr_.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
+                {
+                    std::lock_guard<std::mutex> lock(request_mutex_);
+                    ++request_count_;
+                    last_body_ = req.body;
+                    last_anthropic_version_ = req.get_header_value("Anthropic-Version");
+                    last_api_key_ = req.get_header_value("X-Api-Key");
+                }
+
+                const auto body = json::parse(req.body);
+                if (!body.value("stream", false)) {
+                    res.set_content(json({
+                        {"id", "msg-test123"},
+                        {"type", "message"},
+                        {"role", "assistant"},
+                        {"content", json::array({
+                            {{"type", "text"}, {"text", "Hello "}},
+                            {{"type", "tool_use"}, {"id", "tool"}},
+                            {{"type", "text"}, {"text", "from mock!"}}
+                        })}
+                    }).dump(), "application/json");
+                } else {
+                    const std::string events =
+                        "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+                        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
+                        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" stream\"}}\n\n"
+                        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+                    res.set_content(events, "text/event-stream");
+                }
+            });
+
             svr_.Get("/v1/models", [](const httplib::Request&, httplib::Response& res) {
                 json response = {{"data", json::array({
                     {{"id", "test-model"}, {"object", "model"}}
@@ -122,6 +153,18 @@ public:
         request_bodies_.clear();
         last_normal_body_.clear();
     }
+    std::string last_body() const {
+        std::lock_guard<std::mutex> lock(request_mutex_);
+        return last_body_;
+    }
+    std::string last_anthropic_version() const {
+        std::lock_guard<std::mutex> lock(request_mutex_);
+        return last_anthropic_version_;
+    }
+    std::string last_api_key() const {
+        std::lock_guard<std::mutex> lock(request_mutex_);
+        return last_api_key_;
+    }
 
 private:
     httplib::Server svr_;
@@ -131,6 +174,9 @@ private:
     mutable std::mutex request_mutex_;
     std::vector<std::string> request_bodies_;
     std::string last_normal_body_;
+    std::string last_body_;
+    std::string last_anthropic_version_;
+    std::string last_api_key_;
 };
 
 // --------------- Proxy Under Test ---------------
@@ -153,7 +199,7 @@ public:
 
         store_ = std::make_unique<memorylayer::MemoryStore>(cfg_.db_path);
         // Construct embedding worker on main thread (llama needs main thread for Metal init)
-        // Non-existent model → ready_=false, embed() returns {} → no injection
+        // Non-existent model → ready_=false, embed() returns {} → no retrieval injection
         embedder_ = std::make_unique<memorylayer::EmbeddingWorker>("/nonexistent_model.gguf", 0);
     }
 
@@ -179,6 +225,7 @@ public:
     memorylayer::MemoryStore& store() { return *store_; }
     int port() const { return cfg_.port; }
     const std::string& db_path() const { return db_path_; }
+    memorylayer::Config& config() { return cfg_; }
 
 private:
     memorylayer::Config cfg_;
@@ -455,6 +502,64 @@ void test_fact_extraction_disabled_makes_no_backend_calls(MockBackend& backend) 
     std::cout << "test_fact_extraction_disabled_makes_no_backend_calls PASSED\n";
 }
 
+json anthropic_request(bool stream = false) {
+    return {
+        {"model", "test-model"},
+        {"max_tokens", 64},
+        {"stream", stream},
+        {"messages", json::array({
+            {{"role", "user"}, {"content", json::array({
+                {{"type", "text"}, {"text", "Remember this query"}},
+                {{"type", "tool_result"}, {"content", " and tool text"}},
+                {{"type", "image"}, {"source", "ignored"}}
+            })}}
+        })}
+    };
+}
+
+void test_anthropic_messages_non_stream(MockBackend& backend) {
+    httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
+    httplib::Headers headers = {
+        {"X-Agent-Id", "anthropic-agent"},
+        {"X-Api-Key", "test-api-key"},
+        {"Anthropic-Version", "2023-06-01"}
+    };
+    auto res = cli.Post("/v1/messages", headers, anthropic_request().dump(), "application/json");
+    assert(res);
+    assert(res->status == 200);
+    const auto body = json::parse(res->body);
+    assert(body["content"][0]["text"] == "Hello ");
+    assert(body["content"][2]["text"] == "from mock!");
+    assert(backend.last_anthropic_version() == "2023-06-01");
+    assert(backend.last_api_key() == "test-api-key");
+    const auto seen = json::parse(backend.last_body());
+    assert(seen["messages"][0]["content"][0]["text"] == "Remember this query");
+    std::cout << "test_anthropic_messages_non_stream PASSED\n";
+}
+
+void test_anthropic_messages_stream(MockBackend& backend) {
+    httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
+    auto res = cli.Post("/v1/messages", anthropic_request(true).dump(), "application/json");
+    assert(res);
+    assert(res->status == 200);
+    assert(res->body.find("\"text\":\"Hello\"") != std::string::npos);
+    assert(res->body.find("\"text\":\" stream\"") != std::string::npos);
+    const auto seen = json::parse(backend.last_body());
+    assert(seen["stream"] == true);
+    std::cout << "test_anthropic_messages_stream PASSED\n";
+}
+
+void test_anthropic_messages_validation() {
+    httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
+    auto empty = cli.Post("/v1/messages", R"({"messages":[]})", "application/json");
+    assert(empty && empty->status == 400);
+    auto last_assistant = cli.Post("/v1/messages",
+                                   R"({"messages":[{"role":"assistant","content":"No"}]})",
+                                   "application/json");
+    assert(last_assistant && last_assistant->status == 400);
+    std::cout << "test_anthropic_messages_validation PASSED\n";
+}
+
 // --------------- Main ---------------
 int main() {
     MockBackend backend;
@@ -476,6 +581,10 @@ int main() {
     test_delete_nonexistent_returns_404();
     test_passthrough_other_v1_endpoints();
     test_admin_memories_pagination();
+    test_admin_facts_endpoints(proxy);
+    test_anthropic_messages_non_stream(backend);
+    test_anthropic_messages_stream(backend);
+    test_anthropic_messages_validation();
     test_admin_facts_endpoints(proxy);
 
     proxy.stop();

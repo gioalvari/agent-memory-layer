@@ -133,6 +133,77 @@ void test_parse_inject_mode() {
     std::cout << "test_parse_inject_mode PASSED\n";
 }
 
+void test_extract_anthropic_content() {
+    json content = json::array({
+        {{"type", "text"}, {"text", "First "}},
+        {{"type", "image"}, {"source", "ignored"}},
+        {{"type", "tool_result"}, {"content", "tool text "}},
+        {{"type", "tool_result"}, {"content", json::array({
+            {{"type", "text"}, {"text", "nested text"}},
+            {{"type", "image"}}
+        })}}
+    });
+    assert(memorylayer::extract_anthropic_text(content) ==
+           "First tool text nested text");
+
+    json messages = json::array({
+        {{"role", "user"}, {"content", "earlier"}},
+        {{"role", "assistant"}, {"content", "answer"}},
+        {{"role", "user"}, {"content", content}}
+    });
+    assert(memorylayer::extract_anthropic_last_user_message(messages) ==
+           "First tool text nested text");
+    std::cout << "test_extract_anthropic_content PASSED\n";
+}
+
+void test_inject_anthropic_system_variants() {
+    const std::string context = "<memory context>m</memory context>";
+
+    json absent = {{"messages", json::array({{{"role", "user"}, {"content", "Hi"}}})}};
+    memorylayer::inject_anthropic_memories(absent, context);
+    assert(absent["system"] == context);
+
+    json string = {{"system", "Instructions"},
+                   {"messages", json::array({{{"role", "user"}, {"content", "Hi"}}})}};
+    memorylayer::inject_anthropic_memories(string, context);
+    assert(string["system"] == "Instructions\n\n" + context);
+
+    json array = {{"system", json::array({
+                      {{"type", "text"}, {"text", "Instructions"},
+                       {"cache_control", {{"type", "ephemeral"}}}},
+                      {{"type", "text"}, {"text", "More instructions"}}
+                  })},
+                  {"messages", json::array({{{"role", "user"}, {"content", "Hi"}}})}};
+    memorylayer::inject_anthropic_memories(array, context);
+    assert(array["system"].size() == 3);
+    assert(array["system"][0]["cache_control"]["type"] == "ephemeral");
+    assert(array["system"][2] == json({{"type", "text"}, {"text", context}}));
+    std::cout << "test_inject_anthropic_system_variants PASSED\n";
+}
+
+void test_inject_anthropic_suffix() {
+    const std::string context = "<memory context>m</memory context>";
+    json string = {{"messages", json::array({
+        {{"role", "user"}, {"content", "Hi"}}
+    })}};
+    memorylayer::inject_anthropic_memories(string, context,
+                                           memorylayer::InjectMode::Suffix);
+    assert(string["messages"][0]["content"] == context + "\n\nHi");
+
+    json array = {{"messages", json::array({
+        {{"role", "user"}, {"content", json::array({
+            {{"type", "image"}, {"source", "image"}},
+            {{"type", "text"}, {"text", "Hi"}}
+        })}}
+    })}};
+    memorylayer::inject_anthropic_memories(array, context,
+                                           memorylayer::InjectMode::Sticky);
+    assert(array["messages"][0]["content"][0] ==
+           json({{"type", "text"}, {"text", context}}));
+    assert(array["messages"][0]["content"][1]["type"] == "image");
+    std::cout << "test_inject_anthropic_suffix PASSED\n";
+}
+
 memorylayer::ScoredMemory long_memory(double created_at) {
     memorylayer::ScoredMemory sm;
     sm.memory.user_text = std::string(5000, 'u');
@@ -267,6 +338,9 @@ int main() {
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();
     test_parse_inject_mode();
+    test_extract_anthropic_content();
+    test_inject_anthropic_system_variants();
+    test_inject_anthropic_suffix();
     test_format_memory_line();
     test_format_memory_line_with_absolute_date();
     test_format_memory_context_empty();
