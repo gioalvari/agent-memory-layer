@@ -21,7 +21,10 @@ Your Agent ──→ Memory Layer Proxy (port 8800) ──→ LLM Backend (port 
              └─────────────────────────┘
 ```
 
-The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches for relevant past interactions using cosine similarity on local embeddings, injects matching context into the system prompt, and saves new conversation turns — all transparently.
+The proxy intercepts OpenAI-compatible `/v1/chat/completions` and Anthropic Messages
+`/v1/messages` calls, searches for relevant past interactions using cosine similarity on
+local embeddings, injects matching context, and saves new conversation turns — all
+transparently.
 
 **Zero code changes required in your agent** — just change `base_url`.
 
@@ -161,6 +164,47 @@ response = client.chat.completions.create(
 ```
 
 Works with any OpenAI-compatible client: Python, TypeScript, curl, LangChain, etc.
+
+## Anthropic Messages API
+
+The proxy also supports Anthropic-compatible `POST /v1/messages` endpoints exposed by
+llama-server and other backends. It preserves `x-api-key`, `anthropic-version`,
+`anthropic-beta`, `authorization`, and `content-type` headers when forwarding requests.
+Set the client base URL to the proxy root (not `/v1`):
+
+```bash
+curl http://localhost:8800/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: not-needed" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "X-Agent-Id: my-agent" \
+  -d '{
+    "model": "any-model",
+    "max_tokens": 256,
+    "messages": [{"role": "user", "content": "What did we discuss yesterday?"}]
+  }'
+```
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:8800",
+    api_key="not-needed",
+    default_headers={"X-Agent-Id": "my-agent"},
+)
+
+message = client.messages.create(
+    model="any-model",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "What did we discuss yesterday?"}],
+)
+```
+
+For Messages requests, `system` mode appends the memory block to the top-level
+`system` value; `suffix` prepends it to the last user content. `sticky` falls back to
+suffix placement because its OpenAI-specific history reconstruction does not map
+cleanly to Anthropic's separate `system` field.
 
 ## Admin API
 
@@ -445,7 +489,9 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**37 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+**43 total tests** covering: config parsing, memory CRUD, cosine similarity, OpenAI and
+Anthropic prompt injection formatting, scoring formula, and full HTTP round-trip
+integration (mock backend + real proxy).
 
 ## Recommended Embedding Model
 
@@ -470,7 +516,10 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 ## Known Limitations
 
 - **macOS / Apple Silicon only**: Metal is forced on in CMake; Linux/CUDA builds are untested.
-- **OpenAI Chat Completions only**: memory is applied to `/v1/chat/completions`; other `/v1/*` paths (including Anthropic-style `/v1/messages`) are forwarded unmodified.
+- **Two request formats**: memory is applied to OpenAI Chat Completions
+  (`/v1/chat/completions`) and Anthropic Messages (`/v1/messages`). Other `/v1/*`
+  paths are forwarded unmodified. Anthropic `sticky` uses the documented `suffix`
+  fallback rather than OpenAI's sticky history reconstruction.
 - **Brute-force search**: O(n) scan over an in-RAM float cache; fine up to ~10k memories per process, no ANN index.
 - **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
 - **Injected block is never cached**: retrieved memories change on every request, so the backend always recomputes them. With the default `--inject-mode system` the conversation history after the system prompt is recomputed as well; `--inject-mode suffix` avoids that (see benchmark below).
