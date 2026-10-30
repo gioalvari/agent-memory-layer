@@ -306,6 +306,12 @@ retained window at a user message. Assistant tool calls and their following
 tool messages stay in the same turn, and the final user message is always
 retained even when it alone exceeds the budget.
 
+Token counts for history, injection and sticky budgets come from the loaded
+embedding model's tokenizer (`llama_tokenize`), falling back to the
+`bytes / 4 + 1` heuristic while the model is not ready. The embedding
+tokenizer only approximates the backend chat model's tokenizer, so leave some
+headroom below the backend context window.
+
 To keep the backend prefix stable across several follow-up requests, trimming
 retains approximately half the budget by default (`--history-trim-ratio 0.5`),
 rather than trimming only enough to fit. The cut is deterministic for the same
@@ -486,9 +492,12 @@ a query without usable terms uses dense retrieval only.
 ### Temporal queries
 
 With `--temporal-boost <x>` (the default `0` preserves existing ranking), the
-proxy detects a deterministic, English-only UTC window in queries: `today`,
+proxy detects a deterministic UTC window in queries: `today`,
 `yesterday`, `N days/weeks/months ago`, `last`/`this` week/month/year, `in
 March 2024`, `on March 3, 2024`, ISO dates, and `since`/`before` a date.
+Italian and Spanish equivalents are recognized too (`ieri`, `3 giorni fa`,
+`lunedì scorso`, `hace 2 semanas`, `el mes pasado`, month names), with
+accent-tolerant matching (`lunedi` = `lunedì`).
 Candidate memories receive the additive boost only after they have met the
 normal cosine threshold. A match may come from the memory's UTC creation day
 or from explicit dates saved from its user and assistant text; `today` and
@@ -560,13 +569,15 @@ longest default at which five worst-case lines fit the 2,048-token budget.
 `--compress-memories` preserves the existing per-side byte cap, but replaces
 head truncation for overlong memories with extractive compression. At save time
 the proxy deterministically splits each side into UTF-8-safe sentence, bullet,
-and code-block units and embeds them at normal background priority. It stores
+and code-block units and embeds them in batches at normal background priority. It stores
 only byte offsets and vectors in `memory_sentences`; the canonical text remains
 in `memories`. At retrieval, sentence vectors are ranked against the already
 computed query vector, selected greedily within the same byte cap, and emitted
-in original order with ` … ` marking skipped spans. Older or still-processing
-memories retain the prior head-truncation behavior, so the query hot path never
-embeds text.
+in original order with ` … ` marking skipped spans. Memories saved before the
+flag was enabled are split and embedded by a bounded background backfill after
+startup; until their sentence rows exist (and while new ones are still
+processing) they keep the prior head-truncation behavior, so the query hot path
+never embeds text.
 
 ### Dual-Embedding Search
 
@@ -653,9 +664,9 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 
 ## Requirements
 
-- macOS with Apple Silicon (M1/M2/M3/M4) — Metal acceleration
+- macOS with Apple Silicon (M1/M2/M3/M4) for Metal acceleration, or Linux (CPU)
 - CMake 3.20+
-- C++17 compiler (Xcode Command Line Tools)
+- C++17 compiler (Xcode Command Line Tools, or GCC/Clang on Linux)
 - ~500MB RAM for embedding model + vector cache
 
 ## License

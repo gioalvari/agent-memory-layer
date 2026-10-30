@@ -17,7 +17,7 @@ struct TemporalWindow {
 int64_t utc_day(double unix_seconds);
 std::string utc_date(double unix_seconds);
 
-// Deterministic English-only query parser. It recognizes: today, yesterday,
+// Deterministic English/Italian/Spanish query parser. It recognizes: today, yesterday,
 // N days/weeks/months ago, last/this week/month/year, in <month> [year], on
 // <month> <day>[, year], ISO dates, since <date>, and before <date>. `now` is
 // supplied by the caller so tests and callers can choose one UTC reference.

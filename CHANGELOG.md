@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (PR #10).
 - Asynchronous durable fact extraction, latest-value supersession, facts-first
   injection, and fact administration endpoints (PR #11).
+- Italian and Spanish temporal expressions, with accent-tolerant matching.
+- Background backfill of sentence embeddings for memories stored before
+  `--compress-memories` was enabled.
+- Linux (ubuntu-latest) CI job, recursive submodule checkout, and ccache.
+
+### Changed
+
+- Token budgets (history, injection, sticky, facts) use the embedding model's
+  tokenizer, with the byte heuristic as fallback.
+- Sentence embeddings for `--compress-memories` are computed in batches.
+- Metal is enabled only on Apple platforms.
 
 ### Fixed
 
