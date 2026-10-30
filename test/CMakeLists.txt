@@ -47,7 +47,7 @@ add_executable(test_retrieval test_retrieval.cpp)
 target_include_directories(test_retrieval PRIVATE ../include)
 add_test(NAME test_retrieval COMMAND test_retrieval)
 
-add_executable(test_hybrid test_hybrid.cpp ../src/memory_store.cpp)
+add_executable(test_hybrid test_hybrid.cpp ../src/memory_store.cpp ../src/temporal.cpp)
 target_include_directories(test_hybrid PRIVATE ../include ../deps)
 target_link_libraries(test_hybrid PRIVATE sqlite3)
 if(APPLE)
