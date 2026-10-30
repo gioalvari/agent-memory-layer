@@ -75,10 +75,42 @@ void test_eviction_lru_preserves_hot_memories() {
     std::cout << "test_eviction_lru_preserves_hot_memories PASSED\n";
 }
 
+void test_sentence_rows_delete_with_memory() {
+    std::remove("test_sentence_delete.sqlite");
+    memorylayer::MemoryStore store("test_sentence_delete.sqlite");
+    const int64_t id = store.insert("agent", "question text long enough", "answer text long enough",
+                                    make_emb(0.1f), make_emb(0.2f));
+    store.store_sentences(id, 'u', {{0, 0, 8, {1.0f, 0.0f}}});
+    store.store_sentences(id, 'a', {{0, 0, 6, {0.0f, 1.0f}}});
+    assert(store.sentence_count(id) == 2);
+    assert(store.remove(id));
+    assert(store.sentence_count(id) == 0);
+    std::remove("test_sentence_delete.sqlite");
+    std::cout << "test_sentence_rows_delete_with_memory PASSED\n";
+}
+
+void test_sentence_rows_delete_with_eviction() {
+    std::remove("test_sentence_evict.sqlite");
+    memorylayer::MemoryStore store("test_sentence_evict.sqlite", 1, 5000);
+    const int64_t first = store.insert("agent", "first question", "first answer",
+                                       make_emb(0.1f), make_emb(0.2f));
+    const int64_t second = store.insert("agent", "second question", "second answer",
+                                        make_emb(0.3f), make_emb(0.4f));
+    store.store_sentences(first, 'u', {{0, 0, 5, {1.0f}}});
+    store.store_sentences(second, 'u', {{0, 0, 6, {1.0f}}});
+    store.evict("agent");
+    assert(store.count("agent") == 1);
+    assert((store.sentence_count(first) == 0) != (store.sentence_count(second) == 0));
+    std::remove("test_sentence_evict.sqlite");
+    std::cout << "test_sentence_rows_delete_with_eviction PASSED\n";
+}
+
 int main() {
     test_insert_and_count();
     test_eviction();
     test_eviction_lru_preserves_hot_memories();
+    test_sentence_rows_delete_with_memory();
+    test_sentence_rows_delete_with_eviction();
     std::cout << "All memory_store tests PASSED\n";
     return 0;
 }

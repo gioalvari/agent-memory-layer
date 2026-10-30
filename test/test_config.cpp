@@ -33,6 +33,7 @@ void test_defaults() {
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
     assert(cfg.memory_line_chars == 400);
+    assert(!cfg.compress_memories);
     // Default top-k memories at the default line length fit the default budget.
     assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
            cfg.max_inject_tokens);
@@ -140,11 +141,18 @@ void test_inject_mode() {
     std::cout << "test_inject_mode PASSED\n";
 }
 
+void test_compress_memories_flag() {
+    const char* argv[] = {"memory-layer", "--embedding-model", "m.gguf", "--compress-memories"};
+    assert(memorylayer::parse_args(4, const_cast<char**>(argv)).compress_memories);
+    std::cout << "test_compress_memories_flag PASSED\n";
+}
+
 int main() {
     test_inject_mode();
     test_retrieval_options();
     test_defaults();
     test_custom_values();
+    test_compress_memories_flag();
     std::cout << "All config tests PASSED\n";
     return 0;
 }
