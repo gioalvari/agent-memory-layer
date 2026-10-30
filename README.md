@@ -80,6 +80,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
 | `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
 | `--gpu-layers` | `99` | GPU layers for embedding model |
+| `--history-budget` | off | Maximum estimated tokens from non-system conversation history; drops oldest complete turns when exceeded |
+| `--history-trim-ratio` | `0.5` | When history is trimmed, retain approximately this fraction of `--history-budget` to avoid shifting the retained window every turn |
 | `--inject-mode` | `system` | `system`: append memories to the system prompt. `suffix`: prepend them to the last user message. `sticky`: re-inject prior cached blocks and append a deterministic new block, preserving the full backend prefix across client requests that omit prior blocks |
 | `--sticky-cache-entries` | `4096` | Maximum per-process sticky conversation blocks retained in the thread-safe LRU cache |
 
@@ -207,6 +209,24 @@ If no relevant memories are found (score < 0.3), the request passes through **un
 With `--inject-mode suffix` the same block is instead prepended to the **last user
 message**, so everything before it (system prompt and history) is identical to the
 previous request and stays in the backend's prefix/KV cache.
+
+## Long conversations
+
+Set `--history-budget <tokens>` to bound the estimated token count of the
+non-system messages sent to the backend. When that budget is exceeded, the
+proxy retains all system messages and the newest complete turns, starting the
+retained window at a user message. Assistant tool calls and their following
+tool messages stay in the same turn, and the final user message is always
+retained even when it alone exceeds the budget.
+
+To keep the backend prefix stable across several follow-up requests, trimming
+retains approximately half the budget by default (`--history-trim-ratio 0.5`),
+rather than trimming only enough to fit. The cut is deterministic for the same
+message list. A short omission notice is placed alongside the memory injection
+block, or in the system prompt when no memory is injected. The omitted turns
+have already passed through the proxy and are persisted as memories, so
+retrieval can bring relevant information back into context. In `sticky` mode,
+a history trim resets the reusable prefix at the new retained-window boundary.
 
 ### Benchmark: injection position
 
@@ -445,7 +465,7 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**37 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+**45 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, history trimming, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
 
 ## Recommended Embedding Model
 
@@ -474,6 +494,7 @@ Single-text latency is ~4 ms. Per-memory cosine search: ~50μs over 1000 memorie
 - **Brute-force search**: O(n) scan over an in-RAM float cache; fine up to ~10k memories per process, no ANN index.
 - **Raw turns, not facts**: memories are stored as user/assistant turns; there is no LLM-based fact extraction or contradiction handling.
 - **Injected block is never cached**: retrieved memories change on every request, so the backend always recomputes them. With the default `--inject-mode system` the conversation history after the system prompt is recomputed as well; `--inject-mode suffix` avoids that (see benchmark below).
+- **History-budget resets sticky prefixes**: when a bounded conversation is trimmed, the retained-window boundary changes and `--inject-mode sticky` cannot reuse the previous full prefix.
 - **No encryption at rest**: the SQLite database stores memories in plain text.
 - **Score is not an abstention signal**: retrieval score has AUROC 0.56 for that use case.
 
