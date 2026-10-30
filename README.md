@@ -30,6 +30,7 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 - 🧠 **Dual-embedding retrieval** — matches against both user questions and assistant responses
 - 🔀 **Optional hybrid retrieval** — fuses dense similarity with SQLite FTS5 lexical matches for IDs, names, and numbers
 - ⏱️ **Recency tie-break scoring** — semantic similarity leads; recency resolves near-ties
+- 📅 **Temporal retrieval** — optional time-window ranking and UTC dates in memory context
 - 🔄 **Auto-deduplication** — near-identical memories merge instead of accumulating
 - 🏷️ **Per-agent namespaces** — isolate or share memories across agents via `X-Agent-Id`
 - ⚡ **Metal-accelerated embeddings** — local inference via llama.cpp, no network calls
@@ -79,6 +80,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
 | `--adaptive-k` | off | With `--target-coverage`: choose k per query from its top-1 similarity tercile (Mondrian conformal), never below the global calibrated k, e.g. 21 / 8 / 8 at 0.9 |
 | `--dedup-threshold` | `0.92` | Cosine similarity threshold for dedup |
+| `--temporal-boost` | `0` (off) | Additive rank boost for memories created in, or mentioning dates in, the query's UTC time window; does not change the similarity threshold |
+| `--absolute-dates` | off | Prefix injected memory ages with their UTC ISO date, e.g. `[2024-03-03, 2h ago]` |
 | `--max-memories-per-agent` | `1000` | Eviction cap per agent namespace |
 | `--max-inject-tokens` | `2048` | Token budget for injected memory block; raised to fit all k memories with `--target-coverage` unless set explicitly |
 | `--memory-line-chars` | `400` | Bytes kept from each user/assistant side of an injected memory |
@@ -367,7 +370,8 @@ similarity = cos_max × (agent matches ? agent_boost : 1.0)
 
 tiebreak (default): rank_score = similarity + 0.001 × recency
 legacy:             rank_score = similarity × recency
-filter (both):      similarity >= min_score (default 0.3)
+temporal (optional): rank_score += temporal_boost when the memory matches the window
+filter (all):       similarity >= min_score (default 0.3)
 ```
 
 `ScoredMemory.score` is the rank score. The similarity threshold intentionally
@@ -397,6 +401,21 @@ or name can be recalled even when dense similarity is low. In hybrid mode the in
 lexical-only candidates). User queries are tokenized into quoted alphanumeric FTS
 terms, so punctuation, quotes, and FTS operators cannot alter the MATCH expression;
 a query without usable terms uses dense retrieval only.
+
+### Temporal queries
+
+With `--temporal-boost <x>` (the default `0` preserves existing ranking), the
+proxy detects a deterministic, English-only UTC window in queries: `today`,
+`yesterday`, `N days/weeks/months ago`, `last`/`this` week/month/year, `in
+March 2024`, `on March 3, 2024`, ISO dates, and `since`/`before` a date.
+Candidate memories receive the additive boost only after they have met the
+normal cosine threshold. A match may come from the memory's UTC creation day
+or from explicit dates saved from its user and assistant text; `today` and
+`yesterday` in saved text are resolved against that memory's creation time.
+
+`--absolute-dates` adds the stored UTC date to injected lines without changing
+the default output. This feature has not yet been evaluated end-to-end;
+LongMemEval calibration used synthetic session dates.
 
 ### Retrieval quality
 
@@ -495,9 +514,10 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**52 total tests** covering: config parsing, memory CRUD, FTS5 sync and migrations,
-hybrid fusion, cosine similarity, prompt injection formatting, history trimming,
-scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+Tests cover config parsing, temporal parsing and date extraction, memory CRUD,
+FTS5 synchronization and migrations, hybrid fusion, cosine similarity, prompt
+injection formatting, history trimming, scoring, and full HTTP round-trip
+integration with a mock backend and real proxy.
 
 ## Recommended Embedding Model
 

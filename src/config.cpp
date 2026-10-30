@@ -30,11 +30,13 @@ static void print_usage() {
               << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 400)\n"
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
-              << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
-               << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
-               << "  --history-budget <n>         Max non-system history tokens (default: 0=disabled)\n"
-               << "  --history-trim-ratio <f>     Trim history to this budget fraction (default: 0.5)\n"
-                << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
+               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
+                << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
+                << "  --history-budget <n>         Max non-system history tokens (default: 0=disabled)\n"
+                << "  --history-trim-ratio <f>     Trim history to this budget fraction (default: 0.5)\n"
+                 << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
+                << "  --temporal-boost <f>       Additive rank boost for matching temporal queries (default: 0=off)\n"
+                << "  --absolute-dates           Include UTC ISO dates in injected memory lines\n"
                << "  --sticky-cache-entries <n>  Sticky conversation blocks to retain (default: 4096)\n";
 }
 
@@ -100,6 +102,10 @@ Config parse_args(int argc, char* argv[]) {
         } else if (strcmp(arg, "--similarity-threshold") == 0 && i + 1 < argc) {
             cfg.similarity_threshold = static_cast<float>(std::atof(argv[++i]));
             cfg.min_score_threshold  = cfg.similarity_threshold;
+        } else if (strcmp(arg, "--temporal-boost") == 0 && i + 1 < argc) {
+            cfg.temporal_boost = static_cast<float>(std::atof(argv[++i]));
+        } else if (strcmp(arg, "--absolute-dates") == 0) {
+            cfg.absolute_dates = true;
         } else if (strcmp(arg, "--max-context-tokens") == 0 && i + 1 < argc) {
             cfg.max_context_tokens = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--history-budget") == 0 && i + 1 < argc) {
@@ -148,6 +154,12 @@ Config parse_args(int argc, char* argv[]) {
         std::exit(1);
     }
 
+    if (cfg.temporal_boost < 0.0f) {
+        std::cerr << "Error: --temporal-boost must be non-negative\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
     if (!is_valid_target_coverage(cfg.target_coverage)) {
         std::cerr << "Error: --target-coverage must be 0.8, 0.9, or 0.95\n\n";
         print_usage();
@@ -182,7 +194,7 @@ Config parse_args(int argc, char* argv[]) {
     if (cfg.target_coverage > 0.0f && !cfg.max_inject_tokens_explicit) {
         const int required = required_inject_tokens(
             max_calibrated_top_k(cfg.target_coverage, cfg.decay_mode, cfg.adaptive_k),
-            cfg.memory_line_chars);
+            cfg.memory_line_chars, cfg.absolute_dates);
         cfg.max_inject_tokens = std::max(cfg.max_inject_tokens, required);
     }
 

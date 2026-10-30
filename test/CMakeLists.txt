@@ -3,7 +3,7 @@ function(memorylayer_test_asserts target)
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endfunction()
 
-add_executable(test_memory_store test_memory_store.cpp ../src/memory_store.cpp)
+add_executable(test_memory_store test_memory_store.cpp ../src/memory_store.cpp ../src/temporal.cpp)
 target_include_directories(test_memory_store PRIVATE ../include ../deps)
 target_link_libraries(test_memory_store PRIVATE sqlite3)
 if(APPLE)
@@ -11,7 +11,7 @@ if(APPLE)
 endif()
 add_test(NAME test_memory_store COMMAND test_memory_store)
 
-add_executable(test_injector test_injector.cpp ../src/injector.cpp)
+add_executable(test_injector test_injector.cpp ../src/injector.cpp ../src/temporal.cpp)
 target_include_directories(test_injector PRIVATE ../include ../deps)
 add_test(NAME test_injector COMMAND test_injector)
 
@@ -27,7 +27,7 @@ add_executable(test_sticky test_sticky.cpp ../src/sticky.cpp)
 target_include_directories(test_sticky PRIVATE ../include ../deps)
 add_test(NAME test_sticky COMMAND test_sticky)
 
-add_executable(test_cosine test_cosine.cpp ../src/memory_store.cpp)
+add_executable(test_cosine test_cosine.cpp ../src/memory_store.cpp ../src/temporal.cpp)
 target_include_directories(test_cosine PRIVATE ../include ../deps)
 target_link_libraries(test_cosine PRIVATE sqlite3)
 if(APPLE)
@@ -35,7 +35,7 @@ if(APPLE)
 endif()
 add_test(NAME test_cosine COMMAND test_cosine)
 
-add_executable(test_scoring test_scoring.cpp ../src/memory_store.cpp)
+add_executable(test_scoring test_scoring.cpp ../src/memory_store.cpp ../src/temporal.cpp)
 target_include_directories(test_scoring PRIVATE ../include ../deps)
 target_link_libraries(test_scoring PRIVATE sqlite3)
 if(APPLE)
@@ -55,6 +55,10 @@ if(APPLE)
 endif()
 add_test(NAME test_hybrid COMMAND test_hybrid)
 
+add_executable(test_temporal test_temporal.cpp ../src/temporal.cpp)
+target_include_directories(test_temporal PRIVATE ../include)
+add_test(NAME test_temporal COMMAND test_temporal)
+
 # Integration test: requires llama.cpp for EmbeddingWorker (even if model won't load)
 add_executable(test_integration test_integration.cpp
     ../src/proxy.cpp
@@ -64,6 +68,7 @@ add_executable(test_integration test_integration.cpp
     ../src/history.cpp
     ../src/sticky.cpp
     ../src/config.cpp
+    ../src/temporal.cpp
 )
 target_include_directories(test_integration PRIVATE
     ../include
@@ -96,6 +101,6 @@ if(APPLE)
     )
 endif()
 
-foreach(t test_memory_store test_injector test_history test_config test_sticky test_cosine test_scoring test_retrieval test_hybrid test_integration)
+foreach(t test_memory_store test_injector test_history test_config test_sticky test_cosine test_scoring test_retrieval test_hybrid test_temporal test_integration)
     memorylayer_test_asserts(${t})
 endforeach()

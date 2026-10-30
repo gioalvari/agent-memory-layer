@@ -2,6 +2,7 @@
 #include "memorylayer/injector.h"
 #include "memorylayer/history.h"
 #include "memorylayer/logger.h"
+#include "memorylayer/temporal.h"
 #include "httplib.h"
 #include "json.hpp"
 #include <iostream>
@@ -123,18 +124,23 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
     const int search_top_k = effective_top_k +
         static_cast<int>(sticky_history.shown_memory_ids.size());
+    const double now = static_cast<double>(std::time(nullptr));
+    const auto temporal_window = cfg_.temporal_boost > 0.0f
+        ? parse_temporal_window(user_text, now) : std::nullopt;
     float dense_top_similarity = 0.0f;
     std::vector<ScoredMemory> memories;
     if (cfg_.hybrid_search) {
         auto hybrid = store_.search_hybrid(query_emb, user_text, agent_id, search_top_k,
-                                           cfg_.min_score_threshold, cfg_.decay_days,
-                                           cfg_.agent_boost, cfg_.rrf_k, cfg_.decay_mode);
+                                            cfg_.min_score_threshold, cfg_.decay_days,
+                                            cfg_.agent_boost, cfg_.rrf_k, cfg_.decay_mode,
+                                            temporal_window, cfg_.temporal_boost, now);
         dense_top_similarity = hybrid.dense_top_similarity;
         memories = std::move(hybrid.memories);
     } else {
         memories = store_.search(query_emb, agent_id, search_top_k,
-                                 cfg_.min_score_threshold, cfg_.decay_days,
-                                 cfg_.agent_boost, cfg_.decay_mode);
+                                  cfg_.min_score_threshold, cfg_.decay_days,
+                                  cfg_.agent_boost, cfg_.decay_mode, temporal_window,
+                                  cfg_.temporal_boost, now);
         if (!memories.empty()) dense_top_similarity = memories.front().similarity;
     }
 
@@ -185,9 +191,10 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                  std::to_string(injected_ids.size()));
     } else {
         context = format_memory_context_budgeted(memories,
-                                                 static_cast<double>(std::time(nullptr)),
-                                                 cfg_.max_inject_tokens,
-                                                 cfg_.memory_line_chars);
+                                                  now,
+                                                  cfg_.max_inject_tokens,
+                                                  cfg_.memory_line_chars,
+                                                  cfg_.absolute_dates);
         inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
     }
 

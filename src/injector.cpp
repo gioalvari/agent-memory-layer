@@ -1,4 +1,5 @@
 #include "memorylayer/injector.h"
+#include "memorylayer/temporal.h"
 #include <cmath>
 #include <sstream>
 
@@ -16,21 +17,26 @@ static std::string truncate(const std::string& s, int max_chars) {
     return s.substr(0, max_chars) + "...";
 }
 
-std::string format_memory_line(const ScoredMemory& mem, double now_unix, int max_chars) {
+std::string format_memory_line(const ScoredMemory& mem, double now_unix, int max_chars,
+                               bool absolute_dates) {
     double age_seconds = now_unix - mem.memory.created_at;
     std::string time_str = format_time_ago(age_seconds);
     std::string user_part = truncate(mem.memory.user_text, max_chars);
     std::string assist_part = truncate(mem.memory.assist_text, max_chars);
-    return "- [" + time_str + "] " + user_part + " Response: " + assist_part;
+    const std::string timestamp = absolute_dates
+        ? utc_date(mem.memory.created_at) + ", " + time_str
+        : time_str;
+    return "- [" + timestamp + "] " + user_part + " Response: " + assist_part;
 }
 
-std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix) {
+std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix,
+                                  bool absolute_dates) {
     if (memories.empty()) return "";
 
     std::ostringstream oss;
     oss << kMemoryContextHeader;
     for (const auto& sm : memories) {
-        oss << format_memory_line(sm, now_unix) << "\n";
+        oss << format_memory_line(sm, now_unix, kDefaultMemoryLineChars, absolute_dates) << "\n";
     }
     oss << kMemoryContextFooter;
     return oss.str();
@@ -42,8 +48,8 @@ int estimate_tokens(const std::string& text) {
 }
 
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                           double now_unix, int max_tokens,
-                                           int line_chars) {
+                                            double now_unix, int max_tokens,
+                                            int line_chars, bool absolute_dates) {
     if (memories.empty()) return "";
 
     const std::string header(kMemoryContextHeader);
@@ -58,7 +64,7 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
     int used_tokens = 0;
     int included = 0;
     for (const auto& sm : memories) {
-        std::string line = format_memory_line(sm, now_unix, line_chars) + "\n";
+        std::string line = format_memory_line(sm, now_unix, line_chars, absolute_dates) + "\n";
         int line_tokens = estimate_tokens(line);
 
         if (used_tokens + line_tokens > budget) break;
