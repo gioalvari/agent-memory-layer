@@ -15,6 +15,9 @@
 
 namespace memorylayer {
 
+static double now_unix();
+static float dot_product(const float* a, const float* b, int dim);
+
 std::string sanitize_fts_query(const std::string& query) {
     std::vector<std::string> terms;
     std::string term;
