@@ -48,6 +48,7 @@ MemoryStore::MemoryStore(const std::string& db_path, int max_per_agent, int max_
     init_schema();
     backfill_memory_dates();
     load_cache();
+    load_facts_cache();
 }
 
 MemoryStore::~MemoryStore() {
@@ -107,6 +108,13 @@ void MemoryStore::init_schema() {
         );
         CREATE INDEX IF NOT EXISTS idx_memory_sentences_memory
             ON memory_sentences(memory_id);
+        CREATE TABLE IF NOT EXISTS facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT, subject TEXT NOT NULL,
+            attribute TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
+            source_memory_id INTEGER, created_at REAL NOT NULL, superseded_by INTEGER,
+            embedding BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(agent_id, key) WHERE superseded_by IS NULL;
     )";
     char* err = nullptr;
     sqlite3_exec(db_, sql, nullptr, nullptr, &err);
@@ -180,6 +188,113 @@ void MemoryStore::backfill_memory_dates() {
         store_memory_dates(id, days);
     }
     sqlite3_finalize(stmt);
+}
+
+std::string normalize_fact_component(const std::string& value) {
+    std::string output;
+    bool space = true;
+    for (unsigned char ch : value) {
+        if (std::isspace(ch)) { space = true; continue; }
+        if (space && !output.empty()) output += ' ';
+        output += static_cast<char>(std::tolower(ch));
+        space = false;
+    }
+    return output;
+}
+
+std::string make_fact_key(const std::string& subject, const std::string& attribute) {
+    return normalize_fact_component(subject) + "|" + normalize_fact_component(attribute);
+}
+
+void MemoryStore::load_facts_cache() {
+    const char* sql = "SELECT id, agent_id, subject, attribute, value, key, source_memory_id, created_at, superseded_by, embedding FROM facts ORDER BY id";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        Fact fact;
+        fact.id = sqlite3_column_int64(stmt, 0);
+        const auto text = [stmt](int col) { const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col)); return std::string(v ? v : ""); };
+        fact.agent_id = text(1); fact.subject = text(2); fact.attribute = text(3); fact.value = text(4); fact.key = text(5);
+        fact.source_memory_id = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 6);
+        fact.created_at = sqlite3_column_double(stmt, 7);
+        if (sqlite3_column_type(stmt, 8) != SQLITE_NULL) fact.superseded_by = sqlite3_column_int64(stmt, 8);
+        const float* blob = reinterpret_cast<const float*>(sqlite3_column_blob(stmt, 9));
+        const int size = sqlite3_column_bytes(stmt, 9) / static_cast<int>(sizeof(float));
+        if (blob && size > 0) fact.embedding.assign(blob, blob + size);
+        facts_cache_.push_back(std::move(fact));
+    }
+    sqlite3_finalize(stmt);
+}
+
+int64_t MemoryStore::insert_fact(const std::string& agent_id, const std::string& subject,
+                                 const std::string& attribute, const std::string& value,
+                                 int64_t source_memory_id, const std::vector<float>& embedding) {
+    if (embedding.empty()) return -1;
+    const std::string key = make_fact_key(subject, attribute);
+    const std::string normalized_value = normalize_fact_component(value);
+    std::lock_guard<std::mutex> lock(facts_mutex_);
+    int64_t old_id = -1;
+    for (const auto& fact : facts_cache_) {
+        if (!fact.superseded_by && fact.agent_id == agent_id && fact.key == key) {
+            if (normalize_fact_component(fact.value) == normalized_value) return fact.id;
+            old_id = fact.id;
+            break;
+        }
+    }
+    const char* sql = "INSERT INTO facts (agent_id, subject, attribute, value, key, source_memory_id, created_at, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    if (agent_id.empty()) sqlite3_bind_null(stmt, 1); else sqlite3_bind_text(stmt, 1, agent_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(stmt, 3, attribute.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, value.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(stmt, 5, key.c_str(), -1, SQLITE_TRANSIENT);
+    if (source_memory_id > 0) sqlite3_bind_int64(stmt, 6, source_memory_id); else sqlite3_bind_null(stmt, 6);
+    const double created_at = now_unix();
+    sqlite3_bind_double(stmt, 7, created_at); sqlite3_bind_blob(stmt, 8, embedding.data(), embedding.size() * sizeof(float), SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) { sqlite3_finalize(stmt); return -1; }
+    const int64_t id = sqlite3_last_insert_rowid(db_); sqlite3_finalize(stmt);
+    if (old_id > 0) {
+        sqlite3_stmt* update = nullptr;
+        if (sqlite3_prepare_v2(db_, "UPDATE facts SET superseded_by = ? WHERE id = ?", -1, &update, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(update, 1, id); sqlite3_bind_int64(update, 2, old_id); sqlite3_step(update); sqlite3_finalize(update);
+        }
+        for (auto& fact : facts_cache_) if (fact.id == old_id) fact.superseded_by = id;
+    }
+    facts_cache_.push_back({id, agent_id, subject, attribute, value, key, source_memory_id, created_at, std::nullopt, embedding});
+    return id;
+}
+
+std::vector<ScoredFact> MemoryStore::search_facts(const std::vector<float>& query_emb, const std::string& agent_id, int top_k, float min_score) const {
+    std::vector<float> q = query_emb; float norm = 0.0f;
+    for (float v : q) norm += v * v; norm = std::sqrt(norm); if (norm > 0) for (float& v : q) v /= norm;
+    std::vector<ScoredFact> results;
+    std::lock_guard<std::mutex> lock(facts_mutex_);
+    for (const auto& fact : facts_cache_) {
+        if (fact.superseded_by || fact.embedding.size() != q.size()) continue;
+        if ((!agent_id.empty() && !fact.agent_id.empty() && fact.agent_id != agent_id) || (agent_id.empty() && !fact.agent_id.empty())) continue;
+        const float score = dot_product(q.data(), fact.embedding.data(), static_cast<int>(q.size()));
+        if (score >= min_score) results.push_back({fact, score});
+    }
+    std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) { return a.similarity > b.similarity; });
+    if (static_cast<int>(results.size()) > top_k) results.resize(top_k);
+    return results;
+}
+
+std::vector<Fact> MemoryStore::list_facts(const std::string& agent_id, bool include_superseded, int limit) const {
+    std::lock_guard<std::mutex> lock(facts_mutex_); std::vector<Fact> results;
+    for (auto it = facts_cache_.rbegin(); it != facts_cache_.rend() && static_cast<int>(results.size()) < limit; ++it) {
+        if (!agent_id.empty() && it->agent_id != agent_id) continue;
+        if (!include_superseded && it->superseded_by) continue;
+        results.push_back(*it);
+    }
+    return results;
+}
+
+bool MemoryStore::remove_fact(int64_t fact_id) {
+    std::lock_guard<std::mutex> lock(facts_mutex_); sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM facts WHERE id = ?", -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(stmt, 1, fact_id); sqlite3_step(stmt); const bool removed = sqlite3_changes(db_) > 0; sqlite3_finalize(stmt);
+    if (removed) facts_cache_.erase(std::remove_if(facts_cache_.begin(), facts_cache_.end(), [fact_id](const Fact& fact) { return fact.id == fact_id; }), facts_cache_.end());
+    return removed;
 }
 
 void MemoryStore::load_cache() {

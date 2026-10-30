@@ -145,6 +145,27 @@ void test_sentence_rows_delete_with_eviction() {
     std::cout << "test_sentence_rows_delete_with_eviction PASSED\n";
 }
 
+void test_fact_keys_and_supersession() {
+    std::remove("test_facts.sqlite");
+    memorylayer::MemoryStore store("test_facts.sqlite");
+    assert(memorylayer::make_fact_key(" User  Name ", " Preferred   language ") == "user name|preferred language");
+    const auto embedding = make_emb(0.1f);
+    const auto first = store.insert_fact("agent1", "User", "language", "C++", 1, embedding);
+    assert(first > 0);
+    assert(store.insert_fact("agent1", " user ", " language ", " c++ ", 2, embedding) == first);
+    assert(store.list_facts("agent1", true).size() == 1);
+    const auto second = store.insert_fact("agent1", "User", "language", "Rust", 3, embedding);
+    assert(second > first);
+    const auto active = store.list_facts("agent1", false);
+    assert(active.size() == 1 && active[0].id == second && active[0].value == "Rust");
+    const auto all = store.list_facts("agent1", true);
+    assert(all.size() == 2);
+    assert(store.insert_fact("agent2", "User", "language", "Python", 4, embedding) > 0);
+    assert(store.list_facts("agent2", false).size() == 1);
+    std::remove("test_facts.sqlite");
+    std::cout << "test_fact_keys_and_supersession PASSED\n";
+}
+
 int main() {
     test_insert_and_count();
     test_eviction();
@@ -152,7 +173,7 @@ int main() {
     test_temporal_boost_and_date_cleanup();
     test_sentence_rows_delete_with_memory();
     test_sentence_rows_delete_with_eviction();
-    test_temporal_boost_and_date_cleanup();
+    test_fact_keys_and_supersession();
     std::cout << "All memory_store tests PASSED\n";
     return 0;
 }

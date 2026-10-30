@@ -285,6 +285,59 @@ std::string format_memory_context_budgeted_compressed(
     return oss.str();
 }
 
+std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& facts,
+                                                 const std::vector<ScoredMemory>& memories,
+                                                 double now_unix, int max_tokens, int line_chars,
+                                                 const std::vector<float>* query_embedding,
+                                                 bool absolute_dates) {
+    if (facts.empty()) {
+        return query_embedding
+            ? format_memory_context_budgeted_compressed(memories, *query_embedding, now_unix,
+                                                        max_tokens, line_chars, absolute_dates)
+            : format_memory_context_budgeted(memories, now_unix, max_tokens, line_chars,
+                                             absolute_dates);
+    }
+    const std::string header(kMemoryContextHeader);
+    const std::string footer(kMemoryContextFooter);
+    int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    if (budget <= 0) return "";
+    std::ostringstream oss;
+    oss << header << "Known facts (latest values):\n";
+    int used = estimate_tokens("Known facts (latest values):\n");
+    for (const auto& scored : facts) {
+        const auto& fact = scored.fact;
+        std::string line = "- " + fact.subject + " " + fact.attribute + ": " + fact.value +
+                           " (as of " + format_time_ago(now_unix - fact.created_at) + ")\n";
+        const int tokens = estimate_tokens(line);
+        if (used + tokens > budget) break;
+        oss << line;
+        used += tokens;
+    }
+    if (!memories.empty()) {
+        oss << "Relevant conversation memories:\n";
+        used += estimate_tokens("Relevant conversation memories:\n");
+        for (const auto& memory : memories) {
+            ScoredMemory formatted = memory;
+            if (query_embedding) {
+                formatted.memory.user_text = compress_memory_side(
+                    memory.memory.user_text, memory.memory.user_sentences, *query_embedding,
+                    line_chars);
+                formatted.memory.assist_text = compress_memory_side(
+                    memory.memory.assist_text, memory.memory.assist_sentences, *query_embedding,
+                    line_chars);
+            }
+            const std::string line = format_memory_line(formatted, now_unix, line_chars,
+                                                        absolute_dates) + "\n";
+            const int tokens = estimate_tokens(line);
+            if (used + tokens > budget) break;
+            oss << line;
+            used += tokens;
+        }
+    }
+    oss << footer;
+    return oss.str();
+}
+
 InjectMode parse_inject_mode(const std::string& mode) {
     if (mode == "suffix") return InjectMode::Suffix;
     if (mode == "sticky") return InjectMode::Sticky;

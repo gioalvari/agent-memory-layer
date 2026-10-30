@@ -11,12 +11,12 @@ std::string format_memory_line(const ScoredMemory& mem, double now_unix,
                                 int max_chars = kDefaultMemoryLineChars,
                                 bool absolute_dates = false);
 std::string format_memory_context(const std::vector<ScoredMemory>& memories, double now_unix,
-                                  bool absolute_dates = false);
+                                   bool absolute_dates = false);
 int estimate_tokens(const std::string& text);
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                            double now_unix, int max_tokens,
-                                            int line_chars = kDefaultMemoryLineChars,
-                                            bool absolute_dates = false);
+                                           double now_unix, int max_tokens,
+                                           int line_chars = kDefaultMemoryLineChars,
+                                           bool absolute_dates = false);
 // Deterministic UTF-8-safe sentence spans used for storage and compression.
 std::vector<MemorySentence> split_memory_sentences(const std::string& text);
 std::string compress_memory_side(const std::string& text,
@@ -27,6 +27,12 @@ std::string format_memory_context_budgeted_compressed(
     const std::vector<ScoredMemory>& memories, const std::vector<float>& query_embedding,
     double now_unix, int max_tokens, int line_chars = kDefaultMemoryLineChars,
     bool absolute_dates = false);
+std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& facts,
+                                                 const std::vector<ScoredMemory>& memories,
+                                                 double now_unix, int max_tokens,
+                                                 int line_chars = kDefaultMemoryLineChars,
+                                                 const std::vector<float>* query_embedding = nullptr,
+                                                 bool absolute_dates = false);
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched

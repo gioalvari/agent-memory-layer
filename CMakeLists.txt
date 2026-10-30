@@ -23,6 +23,7 @@ add_executable(memory-layer
     src/main.cpp
     src/config.cpp
     src/temporal.cpp
+    src/fact_extraction.cpp
     src/memory_store.cpp
     src/embedding.cpp
     src/injector.cpp

@@ -241,6 +241,20 @@ void test_compression_fallback_and_flag_off_format() {
     std::cout << "test_compression_fallback_and_flag_off_format PASSED\n";
 }
 
+void test_facts_are_first_and_budgeted() {
+    memorylayer::ScoredFact fact;
+    fact.fact.subject = "User"; fact.fact.attribute = "language"; fact.fact.value = "C++";
+    fact.fact.created_at = static_cast<double>(std::time(nullptr));
+    const auto context = memorylayer::format_fact_memory_context_budgeted({fact}, {long_memory(fact.fact.created_at)},
+                                                                            fact.fact.created_at, 40, 400);
+    assert(context.find("Known facts (latest values):") != std::string::npos);
+    assert(context.find("User language: C++") != std::string::npos);
+    const auto fact_pos = context.find("User language: C++");
+    const auto memory_pos = context.find("Relevant conversation memories:");
+    assert(memory_pos == std::string::npos || fact_pos < memory_pos);
+    std::cout << "test_facts_are_first_and_budgeted PASSED\n";
+}
+
 int main() {
     test_line_token_bound_holds();
     test_required_budget_fits_all_k_memories();
@@ -248,6 +262,7 @@ int main() {
     test_compression_selects_relevant_later_sentence();
     test_compression_orders_and_marks_gaps();
     test_compression_fallback_and_flag_off_format();
+    test_facts_are_first_and_budgeted();
     test_inject_suffix_keeps_prefix_stable();
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();
