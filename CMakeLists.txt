@@ -15,6 +15,7 @@ add_subdirectory(deps/llama.cpp)
 # --- SQLite3 ---
 add_library(sqlite3 STATIC deps/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC deps)
+target_compile_definitions(sqlite3 PRIVATE SQLITE_ENABLE_FTS5)
 target_compile_options(sqlite3 PRIVATE -w)
 
 # --- Main target ---

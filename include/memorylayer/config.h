@@ -11,6 +11,8 @@ struct Config {
     std::string embedding_model_path;
     std::string db_path = "memories.sqlite";
     int top_k = 5;
+    bool hybrid_search = false;
+    int rrf_k = 60;
     int decay_days = 30;
     DecayMode decay_mode = DecayMode::Tiebreak;
     float target_coverage = 0.0f;

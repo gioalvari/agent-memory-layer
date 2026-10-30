@@ -28,6 +28,16 @@ struct ScoredMemory {
     float similarity = 0.0f;  // raw max(cos user, cos assistant), no boost or decay
 };
 
+// Converts arbitrary user input into a safe FTS5 MATCH expression. Each
+// alphanumeric token is quoted and combined with OR; an empty result means
+// lexical retrieval should be skipped.
+std::string sanitize_fts_query(const std::string& query);
+
+struct HybridSearchResult {
+    std::vector<ScoredMemory> memories;
+    float dense_top_similarity = 0.0f;
+};
+
 class MemoryStore {
 public:
     explicit MemoryStore(const std::string& db_path, int max_per_agent = 1000, int max_global = 5000);
@@ -47,8 +57,20 @@ public:
                                      int top_k,
                                       float min_score,
                                       int decay_days,
-                                      float agent_boost,
-                                      DecayMode decay_mode = DecayMode::Tiebreak) const;
+                                       float agent_boost,
+                                       DecayMode decay_mode = DecayMode::Tiebreak) const;
+
+    // score is the RRF fusion score in hybrid results; similarity remains the
+    // raw dense cosine (zero for lexical-only hits).
+    HybridSearchResult search_hybrid(const std::vector<float>& query_emb,
+                                     const std::string& user_query,
+                                     const std::string& agent_id,
+                                     int top_k,
+                                     float min_score,
+                                     int decay_days,
+                                     float agent_boost,
+                                     int rrf_k,
+                                     DecayMode decay_mode = DecayMode::Tiebreak) const;
 
     int64_t find_duplicate(const std::vector<float>& user_emb, float threshold, const std::string& agent_id = "") const;
 
