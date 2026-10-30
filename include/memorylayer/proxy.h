@@ -55,8 +55,9 @@ private:
     StickyCache sticky_cache_;
 
     std::string retrieve_and_inject(const std::string& agent_id,
-                                    const std::string& user_text,
-                                    nlohmann::json& messages);
+                                     const std::string& user_text,
+                                     nlohmann::json& request,
+                                     bool anthropic_messages = false);
 
     std::string extract_last_user_message(const nlohmann::json& messages) const;
     std::string extract_conversation_context(const nlohmann::json& messages, int max_turns = 3) const;
@@ -68,6 +69,7 @@ private:
         std::string agent_id;
         std::string query;
         std::string injected_context;
+        std::string endpoint;
         double timestamp = 0;
     };
     static constexpr int kInjectionRingSize = 10;

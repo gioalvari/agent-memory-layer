@@ -77,9 +77,14 @@ std::string MemoryProxy::extract_conversation_context(const json& messages, int 
 }
 
 std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
-                                               const std::string& user_text,
-                                               json& messages) {
-    const bool sticky_mode = cfg_.inject_mode == "sticky";
+                                                const std::string& user_text,
+                                                json& request,
+                                                bool anthropic_messages) {
+    auto& messages = anthropic_messages ? request["messages"] : request;
+    // Anthropic keeps system content outside the message list, so the OpenAI
+    // sticky-history reconstruction cannot preserve an equivalent prefix.
+    // Use the documented suffix fallback for that endpoint instead.
+    const bool sticky_mode = cfg_.inject_mode == "sticky" && !anthropic_messages;
     std::optional<std::size_t> last_user;
     uint64_t last_key = 0;
     StickyHistoryResult sticky_history;
@@ -174,16 +179,21 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                  std::to_string(injected_ids.size()));
     } else {
         context = format_memory_context_budgeted(memories,
-                                                 static_cast<double>(std::time(nullptr)),
-                                                 cfg_.max_inject_tokens,
-                                                 cfg_.memory_line_chars);
-        inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
+                                                  static_cast<double>(std::time(nullptr)),
+                                                  cfg_.max_inject_tokens,
+                                                  cfg_.memory_line_chars);
+        if (anthropic_messages) {
+            inject_anthropic_memories(request, context, parse_inject_mode(cfg_.inject_mode));
+        } else {
+            inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
+        }
     }
 
     {
         std::lock_guard<std::mutex> lock(debug_mutex_);
         injection_ring_.push_front({agent_id, user_text, context,
-                                    static_cast<double>(std::time(nullptr))});
+                                     anthropic_messages ? "/v1/messages" : "/v1/chat/completions",
+                                     static_cast<double>(std::time(nullptr))});
         if (static_cast<int>(injection_ring_.size()) > kInjectionRingSize) {
             injection_ring_.pop_back();
         }
@@ -631,6 +641,7 @@ setInterval(refresh,10000);
                 {"agent_id", inj.agent_id},
                 {"query", inj.query},
                 {"injected_context", inj.injected_context},
+                {"endpoint", inj.endpoint},
                 {"timestamp", inj.timestamp}
             });
         }
@@ -780,10 +791,166 @@ setInterval(refresh,10000);
         }
     });
 
+    svr.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
+        auto t_start = std::chrono::steady_clock::now();
+
+        if (req.body.size() > 1024 * 1024) {
+            res.status = 413;
+            res.set_content(R"({"error":"Request body too large"})", "application/json");
+            return;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (...) {
+            res.status = 400;
+            res.set_content(R"({"error":"Invalid JSON"})", "application/json");
+            return;
+        }
+
+        if (!body.contains("messages") || !body["messages"].is_array() ||
+            body["messages"].empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"Missing or empty messages array"})", "application/json");
+            return;
+        }
+        const auto& original_messages = body["messages"];
+        if (original_messages.back().value("role", "") != "user") {
+            res.status = 400;
+            res.set_content(R"({"error":"Last message must have role user"})", "application/json");
+            return;
+        }
+
+        std::string agent_id;
+        if (req.has_header("X-Agent-Id")) {
+            agent_id = req.get_header_value("X-Agent-Id");
+        }
+
+        const std::string user_text = extract_anthropic_last_user_message(original_messages);
+        if (!user_text.empty()) {
+            retrieve_and_inject(agent_id, user_text, body, true);
+        }
+
+        httplib::Headers backend_headers;
+        for (const char* header : {"X-Api-Key", "Anthropic-Version", "Anthropic-Beta",
+                                   "Authorization", "Content-Type"}) {
+            if (req.has_header(header)) {
+                backend_headers.emplace(header, req.get_header_value(header));
+            }
+        }
+        if (backend_headers.find("Content-Type") == backend_headers.end()) {
+            backend_headers.emplace("Content-Type", "application/json");
+        }
+
+        const bool streaming = body.value("stream", false);
+        const std::string modified_body = body.dump();
+        httplib::Client cli(cfg_.backend_url);
+        cli.set_read_timeout(300);
+        cli.set_connection_timeout(10);
+
+        if (!streaming) {
+            auto backend_res = cli.Post("/v1/messages", backend_headers, modified_body,
+                                        "application/json");
+            if (!backend_res) {
+                res.status = 502;
+                res.set_content(R"({"error":"Backend unreachable"})", "application/json");
+                return;
+            }
+
+            res.status = backend_res->status;
+            res.set_content(backend_res->body, backend_res->get_header_value("Content-Type"));
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_start).count();
+            res.set_header("X-Memory-Layer-Latency-Ms", std::to_string(ms));
+            res.set_header("Access-Control-Expose-Headers", "X-Memory-Layer-Latency-Ms");
+
+            if (backend_res->status == 200 && !user_text.empty()) {
+                try {
+                    const auto response = json::parse(backend_res->body);
+                    std::string assist_text;
+                    if (response.contains("content") && response["content"].is_array()) {
+                        for (const auto& block : response["content"]) {
+                            if (block.value("type", "") == "text" &&
+                                block["text"].is_string()) {
+                                assist_text += block["text"].get<std::string>();
+                            }
+                        }
+                    }
+                    if (!assist_text.empty()) {
+                        enqueue_save(agent_id, user_text, assist_text, user_text);
+                    }
+                } catch (const std::exception& e) {
+                    LOG_WARN("proxy", std::string("Failed to parse backend response for memory save: ") +
+                                      e.what());
+                }
+            }
+            return;
+        }
+
+        const std::string agent_id_copy = agent_id;
+        const std::string user_text_copy = user_text;
+        const std::string backend_url = cfg_.backend_url;
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [this, backend_headers, modified_body, backend_url, agent_id_copy, user_text_copy]
+            (size_t /*offset*/, httplib::DataSink& sink) -> bool {
+                httplib::Client backend(backend_url);
+                backend.set_read_timeout(300);
+                backend.set_connection_timeout(10);
+                std::string accumulated_content;
+                std::string pending_sse;
+
+                backend.Post(
+                    "/v1/messages", backend_headers, modified_body.size(),
+                    [&modified_body](size_t offset, size_t length,
+                                     httplib::DataSink& body_sink) -> bool {
+                        const size_t remaining = modified_body.size() - offset;
+                        body_sink.write(modified_body.data() + offset,
+                                        std::min(length, remaining));
+                        return true;
+                    },
+                    "application/json",
+                    [&sink, &accumulated_content, &pending_sse](const char* data,
+                                                                 size_t len) -> bool {
+                        sink.write(data, len);
+                        pending_sse.append(data, len);
+                        std::size_t newline = 0;
+                        while ((newline = pending_sse.find('\n')) != std::string::npos) {
+                            std::string line = pending_sse.substr(0, newline);
+                            pending_sse.erase(0, newline + 1);
+                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            if (line.rfind("data: ", 0) != 0) continue;
+                            try {
+                                const auto event = json::parse(line.substr(6));
+                                if (event.value("type", "") == "content_block_delta" &&
+                                    event.contains("delta") &&
+                                    event["delta"].value("type", "") == "text_delta" &&
+                                    event["delta"]["text"].is_string()) {
+                                    accumulated_content += event["delta"]["text"].get<std::string>();
+                                }
+                            } catch (...) {
+                                // Events may be malformed or incomplete; forwarding is unaffected.
+                            }
+                        }
+                        return true;
+                    });
+
+                if (!accumulated_content.empty() && !user_text_copy.empty()) {
+                    enqueue_save(agent_id_copy, user_text_copy, accumulated_content, user_text_copy);
+                }
+                sink.done();
+                return false;
+            },
+            [](bool) {}
+        );
+    });
+
     // Catch-all for other /v1/* endpoints
     svr.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) -> httplib::Server::HandlerResponse {
         // Only catch unhandled paths under /v1/
-        if (req.path.compare(0, 4, "/v1/") == 0 && req.path != "/v1/chat/completions") {
+        if (req.path.compare(0, 4, "/v1/") == 0 && req.path != "/v1/chat/completions" &&
+            req.path != "/v1/messages") {
             httplib::Client cli(cfg_.backend_url);
             cli.set_read_timeout(60);
             httplib::Result result = (req.method == "POST")
