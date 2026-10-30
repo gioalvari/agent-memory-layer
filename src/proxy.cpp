@@ -1,5 +1,6 @@
 #include "memorylayer/proxy.h"
 #include "memorylayer/injector.h"
+#include "memorylayer/history.h"
 #include "memorylayer/logger.h"
 #include "httplib.h"
 #include "json.hpp"
@@ -103,15 +104,14 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         return "";
     }
 
-    // Context overflow guard: estimate total tokens and reduce top_k if needed
+        // Context overflow guard: account for the complete (already trimmed)
+        // request history before reserving room for retrieved memories.
     const bool coverage_mode = cfg_.target_coverage > 0.0f;
     int effective_top_k = coverage_mode
         ? max_calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode, cfg_.adaptive_k)
         : cfg_.top_k;
     if (cfg_.max_context_tokens > 0) {
-        // Rough estimate: 4 chars per token for user prompt
-        int user_token_est = static_cast<int>(user_text.size() / 4);
-        int budget = cfg_.max_context_tokens - user_token_est;
+        int budget = cfg_.max_context_tokens - estimate_non_system_message_tokens(messages);
         // Each memory is ~max_inject_tokens/top_k tokens; scale down if over budget
         if (budget < cfg_.max_inject_tokens) {
             int tokens_per_mem = std::max(1, cfg_.max_inject_tokens /
@@ -668,12 +668,29 @@ setInterval(refresh,10000);
         }
 
         auto& messages = body["messages"];
+        const HistoryTrimResult history = trim_history(
+            messages, cfg_.history_budget, cfg_.history_trim_ratio);
+        if (history.trimmed) {
+            messages = history.messages;
+            LOG_INFO("proxy", "Trimmed " + std::to_string(history.dropped_messages) +
+                     " earlier conversation messages to history budget " +
+                     std::to_string(cfg_.history_budget));
+        }
         std::string user_text = extract_last_user_message(messages);
         // Captured before injection: in suffix mode the memory block is written
         // into the last user turn and must not be saved back as memory.
         const std::string conv_context = extract_conversation_context(messages);
 
-        retrieve_and_inject(agent_id, user_text, messages);
+        const std::string memory_context = retrieve_and_inject(agent_id, user_text, messages);
+        if (history.trimmed) {
+            const std::string omission_notice =
+                std::to_string(history.dropped_messages) +
+                " earlier messages of this conversation were omitted; relevant parts may "
+                "appear in the memory context.";
+            inject_memories(messages, omission_notice,
+                            memory_context.empty() ? InjectMode::System
+                                                   : parse_inject_mode(cfg_.inject_mode));
+        }
 
         bool streaming = body.value("stream", false);
 

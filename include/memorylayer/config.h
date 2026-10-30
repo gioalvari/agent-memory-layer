@@ -31,6 +31,8 @@ struct Config {
     int memory_ttl_days = 0;       // Delete memories older than N days (0 = disabled)
     float similarity_threshold = 0.3f; // Alias for min_score_threshold (CLI: --similarity-threshold)
     int max_context_tokens = 8192; // Max total context tokens; guards against injection overflow
+    int history_budget = 0;        // Max non-system history tokens (0 = disabled)
+    double history_trim_ratio = 0.5; // Trim to this fraction of history_budget
     // Where retrieved memories go: "system" appends them to the system prompt;
     // "suffix" prepends them to the last user message. "sticky" additionally
     // re-injects prior cached blocks so the complete backend prompt stays stable.

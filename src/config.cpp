@@ -1,5 +1,6 @@
 #include "memorylayer/config.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -28,8 +29,10 @@ static void print_usage() {
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
               << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
-              << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
-               << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
+               << "  --max-context-tokens <n>    Guard: max total context tokens (default: 8192)\n"
+               << "  --history-budget <n>         Max non-system history tokens (default: 0=disabled)\n"
+               << "  --history-trim-ratio <f>     Trim history to this budget fraction (default: 0.5)\n"
+                << "  --inject-mode <mode>        system | suffix | sticky (default: system)\n"
                << "  --sticky-cache-entries <n>  Sticky conversation blocks to retain (default: 4096)\n";
 }
 
@@ -93,6 +96,17 @@ Config parse_args(int argc, char* argv[]) {
             cfg.min_score_threshold  = cfg.similarity_threshold;
         } else if (strcmp(arg, "--max-context-tokens") == 0 && i + 1 < argc) {
             cfg.max_context_tokens = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--history-budget") == 0 && i + 1 < argc) {
+            cfg.history_budget = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--history-trim-ratio") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const char* value = argv[++i];
+            cfg.history_trim_ratio = std::strtod(value, &end);
+            if (*value == '\0' || *end != '\0') {
+                std::cerr << "Error: --history-trim-ratio must be a number in (0, 1]\n\n";
+                print_usage();
+                std::exit(1);
+            }
         } else if (strcmp(arg, "--inject-mode") == 0 && i + 1 < argc) {
             cfg.inject_mode = argv[++i];
         } else if (strcmp(arg, "--sticky-cache-entries") == 0 && i + 1 < argc) {
@@ -130,6 +144,19 @@ Config parse_args(int argc, char* argv[]) {
 
     if (cfg.memory_line_chars <= 0) {
         std::cerr << "Error: --memory-line-chars must be positive\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (cfg.history_budget < 0) {
+        std::cerr << "Error: --history-budget must be non-negative\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (!std::isfinite(cfg.history_trim_ratio) || cfg.history_trim_ratio <= 0.0 ||
+        cfg.history_trim_ratio > 1.0) {
+        std::cerr << "Error: --history-trim-ratio must be in (0, 1]\n\n";
         print_usage();
         std::exit(1);
     }
