@@ -16,11 +16,20 @@ using json = nlohmann::json;
 
 namespace memorylayer {
 
-MemoryProxy::MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder)
-    : cfg_(cfg), store_(store), embedder_(embedder),
+MemoryProxy::MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder,
+                         EmbedHook embed_hook)
+    : cfg_(cfg), store_(store), embedder_(embedder), embed_hook_(std::move(embed_hook)),
        sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
     saver_thread_ = std::thread(&MemoryProxy::saver_loop, this);
     if (cfg_.extract_facts) fact_thread_ = std::thread(&MemoryProxy::fact_loop, this);
+}
+
+bool MemoryProxy::embedding_ready() const {
+    return static_cast<bool>(embed_hook_) || embedder_.is_ready();
+}
+
+std::vector<float> MemoryProxy::embed(const std::string& text, EmbedPriority priority) const {
+    return embed_hook_ ? embed_hook_(text, priority) : embedder_.embed(text, priority);
 }
 
 MemoryProxy::~MemoryProxy() {
@@ -94,12 +103,12 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         sticky_history = apply_sticky_history(messages, agent_id, sticky_cache_);
     }
 
-    if (user_text.empty() || !embedder_.is_ready()) {
+    if (user_text.empty() || !embedding_ready()) {
         if (sticky_mode) sticky_cache_.put(last_key, {});
         return "";
     }
 
-    auto query_emb = embedder_.embed(user_text, EmbedPriority::HIGH);
+    auto query_emb = embed(user_text, EmbedPriority::HIGH);
     if (query_emb.empty()) {
         LOG_WARN("proxy", "Skipping memory retrieval because query embedding is empty for agent='" +
                  (agent_id.empty() ? "global" : agent_id) + "'");
@@ -259,7 +268,7 @@ void MemoryProxy::fact_loop() {
             const auto content = response_json["choices"][0]["message"]["content"].get<std::string>();
             for (const auto& fact : parse_extracted_facts(content)) {
                 const std::string text = fact.subject + " " + fact.attribute + ": " + fact.value;
-                const auto embedding = embedder_.embed(text, EmbedPriority::NORMAL);
+                const auto embedding = embed(text, EmbedPriority::NORMAL);
                 if (!embedding.empty()) store_.insert_fact(job.agent_id, fact.subject, fact.attribute,
                                                             fact.value, job.source_memory_id, embedding);
             }
@@ -284,12 +293,12 @@ void MemoryProxy::saver_loop() {
             save_queue_.pop();
         }
 
-        if (!embedder_.is_ready()) continue;
+        if (!embedding_ready()) continue;
 
         {
             const std::string& to_embed = job.embed_text.empty() ? job.user_text : job.embed_text;
-            auto user_emb = embedder_.embed(to_embed);
-            auto assist_emb = embedder_.embed(job.assist_text);
+            auto user_emb = embed(to_embed, EmbedPriority::NORMAL);
+            auto assist_emb = embed(job.assist_text, EmbedPriority::NORMAL);
             if (user_emb.empty() || assist_emb.empty()) continue;
 
             int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);

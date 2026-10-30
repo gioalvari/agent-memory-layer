@@ -12,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <functional>
 
 namespace memorylayer {
 
@@ -27,7 +28,10 @@ struct FactExtractionJob { std::string agent_id, user_text, assist_text, model; 
 
 class MemoryProxy {
 public:
-    MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder);
+    using EmbedHook = std::function<std::vector<float>(const std::string&, EmbedPriority)>;
+
+    MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder,
+                EmbedHook embed_hook = {});
     ~MemoryProxy();
 
     // Serves until stop(); returns false if the listen socket could not be opened.
@@ -39,6 +43,7 @@ private:
     const Config& cfg_;
     MemoryStore& store_;
     EmbeddingWorker& embedder_;
+    EmbedHook embed_hook_;
 
     std::atomic<bool> stop_{false};
     std::atomic<httplib::Server*> svr_ptr_{nullptr};
@@ -60,6 +65,8 @@ private:
                        const std::string& embed_text = "", const std::string& model = "");
     void enqueue_fact_extraction(FactExtractionJob job);
     void fact_loop();
+    bool embedding_ready() const;
+    std::vector<float> embed(const std::string& text, EmbedPriority priority) const;
 
     std::atomic<int64_t> save_drop_count_{0};
     StickyCache sticky_cache_;
