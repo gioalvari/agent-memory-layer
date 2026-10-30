@@ -23,7 +23,7 @@ add_executable(test_config test_config.cpp ../src/config.cpp)
 target_include_directories(test_config PRIVATE ../include ../deps)
 add_test(NAME test_config COMMAND test_config)
 
-add_executable(test_sticky test_sticky.cpp ../src/sticky.cpp ../src/injector.cpp)
+add_executable(test_sticky test_sticky.cpp ../src/sticky.cpp ../src/injector.cpp ../src/temporal.cpp)
 target_include_directories(test_sticky PRIVATE ../include ../deps)
 add_test(NAME test_sticky COMMAND test_sticky)
 
