@@ -16,6 +16,8 @@ static void print_usage() {
               << "  --port <n>                  Proxy listen port (default: 8800)\n"
               << "  --db <path>                 SQLite database path (default: memories.sqlite)\n"
                << "  --top-k <n>                 Memories to inject (default: 5)\n"
+               << "  --hybrid-search             Fuse dense and FTS5 lexical retrieval (default: off)\n"
+               << "  --rrf-k <n>                 Reciprocal rank fusion constant (default: 60)\n"
                << "  --decay-days <n>            Temporal decay half-life (default: 30)\n"
                << "  --decay-mode <mode>         tiebreak | legacy (default: tiebreak)\n"
                << "  --target-coverage <p>       0.8 | 0.9 | 0.95 calibrated retrieval coverage\n"
@@ -52,6 +54,10 @@ Config parse_args(int argc, char* argv[]) {
             cfg.db_path = argv[++i];
         } else if (strcmp(arg, "--top-k") == 0 && i + 1 < argc) {
             cfg.top_k = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--hybrid-search") == 0) {
+            cfg.hybrid_search = true;
+        } else if (strcmp(arg, "--rrf-k") == 0 && i + 1 < argc) {
+            cfg.rrf_k = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--decay-days") == 0 && i + 1 < argc) {
             cfg.decay_days = std::atoi(argv[++i]);
         } else if (strcmp(arg, "--decay-mode") == 0 && i + 1 < argc) {
@@ -132,6 +138,12 @@ Config parse_args(int argc, char* argv[]) {
 
     if (cfg.decay_days <= 0) {
         std::cerr << "Error: --decay-days must be positive\n\n";
+        print_usage();
+        std::exit(1);
+    }
+
+    if (cfg.rrf_k <= 0) {
+        std::cerr << "Error: --rrf-k must be positive\n\n";
         print_usage();
         std::exit(1);
     }

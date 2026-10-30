@@ -7,11 +7,34 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#include <cctype>
+#include <unordered_map>
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #endif
 
 namespace memorylayer {
+
+std::string sanitize_fts_query(const std::string& query) {
+    std::vector<std::string> terms;
+    std::string term;
+    for (unsigned char ch : query) {
+        if (std::isalnum(ch)) {
+            term += static_cast<char>(ch);
+        } else if (!term.empty()) {
+            terms.push_back(std::move(term));
+            term.clear();
+        }
+    }
+    if (!term.empty()) terms.push_back(std::move(term));
+
+    std::string result;
+    for (const auto& value : terms) {
+        if (!result.empty()) result += " OR ";
+        result += '"' + value + '"';
+    }
+    return result;
+}
 
 MemoryStore::MemoryStore(const std::string& db_path, int max_per_agent, int max_global)
     : max_per_agent_(max_per_agent), max_global_(max_global) {
@@ -44,6 +67,26 @@ void MemoryStore::init_schema() {
         );
         CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
         CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+            user_text, assist_text, content=''
+        );
+
+        CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, user_text, assist_text)
+            VALUES (new.id, new.user_text, new.assist_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, user_text, assist_text)
+            VALUES ('delete', old.id, old.user_text, old.assist_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_fts_update
+        AFTER UPDATE OF user_text, assist_text ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, user_text, assist_text)
+            VALUES ('delete', old.id, old.user_text, old.assist_text);
+            INSERT INTO memories_fts(rowid, user_text, assist_text)
+            VALUES (new.id, new.user_text, new.assist_text);
+        END;
     )";
     char* err = nullptr;
     sqlite3_exec(db_, sql, nullptr, nullptr, &err);
@@ -51,6 +94,35 @@ void MemoryStore::init_schema() {
         std::string msg = err;
         sqlite3_free(err);
         throw std::runtime_error("Schema init failed: " + msg);
+    }
+
+    int memory_count = 0;
+    int fts_count = 0;
+    sqlite3_stmt* count_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM memories", -1, &count_stmt, nullptr) == SQLITE_OK &&
+        sqlite3_step(count_stmt) == SQLITE_ROW) {
+        memory_count = sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+    count_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM memories_fts", -1, &count_stmt, nullptr) == SQLITE_OK &&
+        sqlite3_step(count_stmt) == SQLITE_ROW) {
+        fts_count = sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+    if (memory_count != fts_count) {
+        const char* backfill = R"(
+            INSERT INTO memories_fts(memories_fts) VALUES ('delete-all');
+            INSERT INTO memories_fts(rowid, user_text, assist_text)
+            SELECT id, user_text, assist_text FROM memories;
+        )";
+        err = nullptr;
+        sqlite3_exec(db_, backfill, nullptr, nullptr, &err);
+        if (err) {
+            std::string msg = err;
+            sqlite3_free(err);
+            throw std::runtime_error("FTS backfill failed: " + msg);
+        }
     }
 }
 
@@ -371,6 +443,94 @@ std::vector<ScoredMemory> MemoryStore::search(const std::vector<float>& query_em
     }
 
     return results;
+}
+
+HybridSearchResult MemoryStore::search_hybrid(const std::vector<float>& query_emb,
+                                              const std::string& user_query,
+                                              const std::string& agent_id,
+                                              int top_k,
+                                              float min_score,
+                                              int decay_days,
+                                              float agent_boost,
+                                              int rrf_k,
+                                              DecayMode decay_mode) const {
+    const int candidate_count = std::max(50, 4 * top_k);
+    auto dense = search(query_emb, agent_id, candidate_count, min_score, decay_days,
+                        agent_boost, decay_mode);
+    HybridSearchResult result;
+    if (!dense.empty()) result.dense_top_similarity = dense.front().similarity;
+
+    const std::string match_query = sanitize_fts_query(user_query);
+    if (match_query.empty()) {
+        if (static_cast<int>(dense.size()) > top_k) dense.resize(top_k);
+        result.memories = std::move(dense);
+        return result;
+    }
+
+    std::vector<int64_t> lexical_ids;
+    const char* lexical_sql = R"(
+        SELECT m.id FROM memories_fts
+        JOIN memories AS m ON m.id = memories_fts.rowid
+        WHERE memories_fts MATCH ?
+          AND ((? = '' AND m.agent_id IS NULL)
+               OR (? != '' AND (m.agent_id IS NULL OR m.agent_id = ?)))
+        ORDER BY bm25(memories_fts)
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, lexical_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, match_query.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, agent_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, agent_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, agent_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 5, candidate_count);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            lexical_ids.push_back(sqlite3_column_int64(stmt, 0));
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    std::unordered_map<int64_t, ScoredMemory> by_id;
+    std::unordered_map<int64_t, float> fused_scores;
+    for (size_t rank = 0; rank < dense.size(); ++rank) {
+        const auto id = dense[rank].memory.id;
+        by_id.emplace(id, dense[rank]);
+        fused_scores[id] += 1.0f / static_cast<float>(rrf_k + rank + 1);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        for (size_t rank = 0; rank < lexical_ids.size(); ++rank) {
+            const auto id = lexical_ids[rank];
+            fused_scores[id] += 1.0f / static_cast<float>(rrf_k + rank + 1);
+            if (by_id.find(id) != by_id.end()) continue;
+            const auto found = std::find_if(cache_.begin(), cache_.end(),
+                                            [id](const CachedEntry& entry) { return entry.id == id; });
+            if (found == cache_.end()) continue;
+            const int dim = found->assist_emb_offset - found->user_emb_offset;
+            const float* user_ptr = embeddings_.data() + found->user_emb_offset;
+            const float* assist_ptr = embeddings_.data() + found->assist_emb_offset;
+            Memory memory{found->id, found->agent_id, found->created_at, found->created_at,
+                          found->user_text, found->assist_text,
+                          std::vector<float>(user_ptr, user_ptr + dim),
+                          std::vector<float>(assist_ptr, assist_ptr + dim), found->access_count};
+            by_id.emplace(id, ScoredMemory{std::move(memory), 0.0f, 0.0f});
+        }
+    }
+
+    result.memories.reserve(fused_scores.size());
+    for (const auto& [id, score] : fused_scores) {
+        auto found = by_id.find(id);
+        if (found == by_id.end()) continue;
+        found->second.score = score;
+        result.memories.push_back(std::move(found->second));
+    }
+    std::sort(result.memories.begin(), result.memories.end(),
+              [](const ScoredMemory& left, const ScoredMemory& right) {
+                  return left.score > right.score;
+              });
+    if (static_cast<int>(result.memories.size()) > top_k) result.memories.resize(top_k);
+    return result;
 }
 
 int64_t MemoryStore::find_duplicate(const std::vector<float>& user_emb, float threshold, const std::string& agent_id) const {

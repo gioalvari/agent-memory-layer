@@ -123,16 +123,27 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
 
     const int search_top_k = effective_top_k +
         static_cast<int>(sticky_history.shown_memory_ids.size());
-    auto memories = store_.search(query_emb, agent_id, search_top_k,
-                                  cfg_.min_score_threshold, cfg_.decay_days,
-                                  cfg_.agent_boost, cfg_.decay_mode);
+    float dense_top_similarity = 0.0f;
+    std::vector<ScoredMemory> memories;
+    if (cfg_.hybrid_search) {
+        auto hybrid = store_.search_hybrid(query_emb, user_text, agent_id, search_top_k,
+                                           cfg_.min_score_threshold, cfg_.decay_days,
+                                           cfg_.agent_boost, cfg_.rrf_k, cfg_.decay_mode);
+        dense_top_similarity = hybrid.dense_top_similarity;
+        memories = std::move(hybrid.memories);
+    } else {
+        memories = store_.search(query_emb, agent_id, search_top_k,
+                                 cfg_.min_score_threshold, cfg_.decay_days,
+                                 cfg_.agent_boost, cfg_.decay_mode);
+        if (!memories.empty()) dense_top_similarity = memories.front().similarity;
+    }
 
     if (coverage_mode) {
         // The adaptive k depends on the query's top-ranked memory, before
         // excluding memories that sticky mode already showed.
-        const int required_k = cfg_.adaptive_k && !memories.empty()
+        const int required_k = cfg_.adaptive_k && dense_top_similarity > 0.0f
             ? adaptive_top_k(cfg_.target_coverage, cfg_.decay_mode,
-                             memories.front().similarity)
+                              dense_top_similarity)
             : calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode);
         if (cfg_.adaptive_k) effective_top_k = std::min(guarded_top_k, required_k);
         if (guarded_top_k < required_k) {

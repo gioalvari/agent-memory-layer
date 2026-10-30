@@ -28,6 +28,7 @@ The proxy intercepts OpenAI-compatible `/v1/chat/completions` calls, searches fo
 ## Features
 
 - 🧠 **Dual-embedding retrieval** — matches against both user questions and assistant responses
+- 🔀 **Optional hybrid retrieval** — fuses dense similarity with SQLite FTS5 lexical matches for IDs, names, and numbers
 - ⏱️ **Recency tie-break scoring** — semantic similarity leads; recency resolves near-ties
 - 🔄 **Auto-deduplication** — near-identical memories merge instead of accumulating
 - 🏷️ **Per-agent namespaces** — isolate or share memories across agents via `X-Agent-Id`
@@ -71,6 +72,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 | `--port` | `8800` | Proxy listen port |
 | `--db` | `memories.sqlite` | SQLite database path |
 | `--top-k` | `5` | Max memories to inject per request |
+| `--hybrid-search` | off | Fuse dense candidates with SQLite FTS5 lexical candidates using reciprocal-rank fusion |
+| `--rrf-k` | `60` | Reciprocal-rank fusion constant used by `--hybrid-search` |
 | `--decay-days` | `30` | Linear recency horizon (days; decay floors at 0.5) |
 | `--decay-mode` | `tiebreak` | `tiebreak`: preserve cosine ranking and use recency only for near-ties; `legacy`: multiply similarity by decay |
 | `--target-coverage` | off | `0.8`, `0.9`, or `0.95`; overrides `--top-k` with calibrated retrieval k |
@@ -371,6 +374,30 @@ filter (both):      similarity >= min_score (default 0.3)
 does not include the tiebreak term, keeping `--similarity-threshold` on a
 cosine-like scale.
 
+### Hybrid search
+
+By default, retrieval is dense-only and preserves the existing cosine, agent-boost,
+and recency ranking behavior exactly. Enable `--hybrid-search` to additionally query
+an always-maintained SQLite FTS5 index over memory user and assistant text. The index
+is maintained for every database, even while hybrid search is off: its write cost is
+small, this makes the option immediately useful, and startup backfills old databases
+whose index is missing or out of sync.
+
+Hybrid retrieval takes `max(50, 4 × k)` dense candidates that pass the normal
+minimum-similarity threshold and the same number of namespace-filtered lexical
+candidates. It combines their ranks with reciprocal-rank fusion:
+
+```
+RRF score(memory) = Σ 1 / (--rrf-k + rank)
+```
+
+Lexical-only candidates are intentionally allowed, so an exact ticket, identifier,
+or name can be recalled even when dense similarity is low. In hybrid mode the injected
+`score` is this RRF score, while `similarity` remains raw dense cosine (zero for
+lexical-only candidates). User queries are tokenized into quoted alphanumeric FTS
+terms, so punctuation, quotes, and FTS operators cannot alter the MATCH expression;
+a query without usable terms uses dense retrieval only.
+
 ### Retrieval quality
 
 On 500 LongMemEval-S questions with `nomic-embed-text`, using recency only as a
@@ -388,6 +415,9 @@ retrieval depth: **0.8 → 4**, **0.9 → 8**, **0.95 → 16** for tiebreak scor
 all 467 labeled questions. See [the conformal retrieval study](docs/conformal-retrieval.md).
 The calibration uses synthetic session dates, guarantees only marginal
 at-least-one-evidence coverage, and is model-specific.
+It was measured with dense retrieval; `--target-coverage` and `--adaptive-k` still
+select k from the dense top-1 similarity under `--hybrid-search`, but their conformal
+coverage guarantee does not transfer to hybrid ranking.
 The guarantee assumes all k memories are injected. Each memory is one line
 whose user and assistant sides are cut to `--memory-line-chars` bytes (400 by
 default, at most 209 estimated tokens per line), so with `--target-coverage`
@@ -465,7 +495,9 @@ Embedding benchmarks (need a real GGUF model, not run by `ctest`):
 ./build/test/bench_embedding_batch <model.gguf>  # serial vs batch over n_texts
 ```
 
-**45 total tests** covering: config parsing, memory CRUD, cosine similarity, prompt injection formatting, history trimming, scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
+**52 total tests** covering: config parsing, memory CRUD, FTS5 sync and migrations,
+hybrid fusion, cosine similarity, prompt injection formatting, history trimming,
+scoring formula, and full HTTP round-trip integration (mock backend + real proxy).
 
 ## Recommended Embedding Model
 
