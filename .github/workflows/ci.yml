@@ -19,8 +19,8 @@ jobs:
         include:
           - os: macos-14
             allow-failure: false
-          # CMake currently forces GGML_METAL, which llama.cpp cannot build on Linux.
-          # Keep the CPU-build signal visible until a CMake-only follow-up can disable it.
+          # CPU-only build (Metal is enabled on Apple only). Non-blocking until the
+          # first green Linux run confirms the toolchain; then drop allow-failure.
           - os: ubuntu-latest
             allow-failure: true
     continue-on-error: ${{ matrix.allow-failure }}
