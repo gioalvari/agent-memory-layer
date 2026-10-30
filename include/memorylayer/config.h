@@ -27,6 +27,9 @@ struct Config {
     // raise the budget so that all calibrated memories fit.
     bool max_inject_tokens_explicit = false;
     int memory_line_chars = kDefaultMemoryLineChars; // Bytes kept per user/assistant side
+    // Replace head truncation with sentence-level, query-aware extraction when
+    // sentence embeddings are available. Disabled to preserve existing prompts.
+    bool compress_memories = false;
     std::string admin_token;       // If set, /admin/* requires Authorization: Bearer <token>
     int memory_ttl_days = 0;       // Delete memories older than N days (0 = disabled)
     float similarity_threshold = 0.3f; // Alias for min_score_threshold (CLI: --similarity-threshold)

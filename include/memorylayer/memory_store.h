@@ -10,6 +10,15 @@ struct sqlite3;
 
 namespace memorylayer {
 
+// Text stays in memories; rows only retain byte ranges into that text plus the
+// vector. This avoids duplicating potentially large conversation turns.
+struct MemorySentence {
+    int idx = 0;
+    int start_byte = 0;
+    int end_byte = 0;
+    std::vector<float> embedding;
+};
+
 struct Memory {
     int64_t id;
     std::string agent_id;
@@ -20,6 +29,8 @@ struct Memory {
     std::vector<float> user_emb;
     std::vector<float> assist_emb;
     int access_count;
+    std::vector<MemorySentence> user_sentences;
+    std::vector<MemorySentence> assist_sentences;
 };
 
 struct ScoredMemory {
@@ -59,6 +70,10 @@ public:
 
     std::vector<Memory> list_memories(const std::string& agent_id, int limit = 50, int offset = 0) const;
     bool remove(int64_t memory_id);
+    void store_sentences(int64_t memory_id, char side,
+                         const std::vector<MemorySentence>& sentences);
+    void load_sentences(std::vector<ScoredMemory>& memories) const;
+    int sentence_count(int64_t memory_id) const;
     struct Stats {
         int total_memories;
         int total_agents;
@@ -88,6 +103,7 @@ private:
     int emb_dim_ = 0;
     mutable int holes_count_ = 0;   // entries erased from cache_ but not yet recompacted
     mutable std::mutex cache_mutex_;
+    mutable std::mutex db_mutex_;
 
     void load_cache();
     void recompact_embeddings();

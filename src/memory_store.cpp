@@ -21,6 +21,7 @@ MemoryStore::MemoryStore(const std::string& db_path, int max_per_agent, int max_
     }
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA foreign_keys=ON;", nullptr, nullptr, nullptr);
     init_schema();
     load_cache();
 }
@@ -44,6 +45,18 @@ void MemoryStore::init_schema() {
         );
         CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
         CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        CREATE TABLE IF NOT EXISTS memory_sentences (
+            memory_id  INTEGER NOT NULL,
+            side       TEXT NOT NULL CHECK(side IN ('u', 'a')),
+            idx        INTEGER NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte   INTEGER NOT NULL,
+            embedding  BLOB NOT NULL,
+            PRIMARY KEY (memory_id, side, idx),
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_sentences_memory
+            ON memory_sentences(memory_id);
     )";
     char* err = nullptr;
     sqlite3_exec(db_, sql, nullptr, nullptr, &err);
@@ -455,6 +468,78 @@ bool MemoryStore::remove(int64_t memory_id) {
         }
     }
     return changes > 0;
+}
+
+void MemoryStore::store_sentences(int64_t memory_id, char side,
+                                  const std::vector<MemorySentence>& sentences) {
+    if (sentences.empty() || (side != 'u' && side != 'a')) return;
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    const char* sql = R"(
+        INSERT OR REPLACE INTO memory_sentences
+            (memory_id, side, idx, start_byte, end_byte, embedding)
+        VALUES (?, ?, ?, ?, ?, ?)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    for (const auto& sentence : sentences) {
+        if (sentence.embedding.empty()) continue;
+        sqlite3_bind_int64(stmt, 1, memory_id);
+        sqlite3_bind_text(stmt, 2, &side, 1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 3, sentence.idx);
+        sqlite3_bind_int(stmt, 4, sentence.start_byte);
+        sqlite3_bind_int(stmt, 5, sentence.end_byte);
+        sqlite3_bind_blob(stmt, 6, sentence.embedding.data(),
+                          static_cast<int>(sentence.embedding.size() * sizeof(float)),
+                          SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::cerr << "[store] store_sentences step failed: " << sqlite3_errmsg(db_) << "\n";
+        }
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MemoryStore::load_sentences(std::vector<ScoredMemory>& memories) const {
+    if (memories.empty()) return;
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    const char* sql = R"(
+        SELECT side, idx, start_byte, end_byte, embedding
+        FROM memory_sentences WHERE memory_id = ? ORDER BY side, idx
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    for (auto& scored : memories) {
+        sqlite3_bind_int64(stmt, 1, scored.memory.id);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            MemorySentence sentence;
+            sentence.idx = sqlite3_column_int(stmt, 1);
+            sentence.start_byte = sqlite3_column_int(stmt, 2);
+            sentence.end_byte = sqlite3_column_int(stmt, 3);
+            const auto* blob = static_cast<const float*>(sqlite3_column_blob(stmt, 4));
+            const int bytes = sqlite3_column_bytes(stmt, 4);
+            if (blob && bytes > 0) {
+                sentence.embedding.assign(blob, blob + bytes / static_cast<int>(sizeof(float)));
+                (sqlite3_column_text(stmt, 0)[0] == 'u' ? scored.memory.user_sentences
+                                                         : scored.memory.assist_sentences)
+                    .push_back(std::move(sentence));
+            }
+        }
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    }
+    sqlite3_finalize(stmt);
+}
+
+int MemoryStore::sentence_count(int64_t memory_id) const {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM memory_sentences WHERE memory_id = ?",
+                           -1, &stmt, nullptr) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(stmt, 1, memory_id);
+    int result = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    return result;
 }
 
 MemoryStore::Stats MemoryStore::get_stats() const {

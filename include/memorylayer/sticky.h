@@ -75,6 +75,7 @@ struct StickyFormattedContext {
 // byte-identical when it is re-injected in a later request.
 StickyFormattedContext format_sticky_memory_context_budgeted(
     const std::vector<ScoredMemory>& memories, int max_tokens,
-    int line_chars = kDefaultMemoryLineChars);
+    int line_chars = kDefaultMemoryLineChars,
+    const std::vector<float>* query_embedding = nullptr);
 
 } // namespace memorylayer

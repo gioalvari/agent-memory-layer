@@ -158,12 +158,15 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         return "";
     }
 
+    if (cfg_.compress_memories) store_.load_sentences(memories);
+
     std::string context;
     std::vector<int64_t> injected_ids;
     if (sticky_mode) {
         const StickyFormattedContext formatted =
             format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens,
-                                                  cfg_.memory_line_chars);
+                                                   cfg_.memory_line_chars,
+                                                   cfg_.compress_memories ? &query_emb : nullptr);
         context = formatted.block;
         injected_ids = formatted.memory_ids;
         const auto injected_last_user = last_user_message_index(messages);
@@ -173,10 +176,13 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
                  std::to_string(sticky_history.reused_blocks) + ", new memories=" +
                  std::to_string(injected_ids.size()));
     } else {
-        context = format_memory_context_budgeted(memories,
-                                                 static_cast<double>(std::time(nullptr)),
-                                                 cfg_.max_inject_tokens,
-                                                 cfg_.memory_line_chars);
+        context = cfg_.compress_memories
+            ? format_memory_context_budgeted_compressed(
+                  memories, query_emb, static_cast<double>(std::time(nullptr)),
+                  cfg_.max_inject_tokens, cfg_.memory_line_chars)
+            : format_memory_context_budgeted(memories, static_cast<double>(std::time(nullptr)),
+                                             cfg_.max_inject_tokens,
+                                             cfg_.memory_line_chars);
         inject_memories(messages, context, parse_inject_mode(cfg_.inject_mode));
     }
 
@@ -231,8 +237,8 @@ void MemoryProxy::saver_loop() {
 
         {
             const std::string& to_embed = job.embed_text.empty() ? job.user_text : job.embed_text;
-            auto user_emb = embedder_.embed(to_embed);
-            auto assist_emb = embedder_.embed(job.assist_text);
+            auto user_emb = embedder_.embed(to_embed, EmbedPriority::NORMAL);
+            auto assist_emb = embedder_.embed(job.assist_text, EmbedPriority::NORMAL);
             if (user_emb.empty() || assist_emb.empty()) continue;
 
             int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
@@ -240,7 +246,22 @@ void MemoryProxy::saver_loop() {
                 store_.touch(dup_id);
                 LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
             } else {
-                store_.insert(job.agent_id, job.user_text, job.assist_text, user_emb, assist_emb);
+                const int64_t memory_id = store_.insert(job.agent_id, job.user_text, job.assist_text,
+                                                        user_emb, assist_emb);
+                if (memory_id > 0) {
+                    // This runs off the request path at NORMAL priority. Rows store
+                    // spans plus vectors, so original memory text stays canonical.
+                    for (const auto& [side, text] : std::vector<std::pair<char, std::string>>{
+                             {'u', job.user_text}, {'a', job.assist_text}}) {
+                        auto sentences = split_memory_sentences(text);
+                        for (auto& sentence : sentences) {
+                            const std::string fragment = text.substr(
+                                sentence.start_byte, sentence.end_byte - sentence.start_byte);
+                            sentence.embedding = embedder_.embed(fragment, EmbedPriority::NORMAL);
+                        }
+                        store_.store_sentences(memory_id, side, sentences);
+                    }
+                }
                 store_.evict(job.agent_id);
                 LOG_INFO("memory", "Saved new memory for agent='" +
                          (job.agent_id.empty() ? "global" : job.agent_id) + "'");
