@@ -43,6 +43,14 @@ add_executable(test_retrieval test_retrieval.cpp)
 target_include_directories(test_retrieval PRIVATE ../include)
 add_test(NAME test_retrieval COMMAND test_retrieval)
 
+add_executable(test_hybrid test_hybrid.cpp ../src/memory_store.cpp)
+target_include_directories(test_hybrid PRIVATE ../include ../deps)
+target_link_libraries(test_hybrid PRIVATE sqlite3)
+if(APPLE)
+    target_link_libraries(test_hybrid PRIVATE "-framework Accelerate")
+endif()
+add_test(NAME test_hybrid COMMAND test_hybrid)
+
 # Integration test: requires llama.cpp for EmbeddingWorker (even if model won't load)
 add_executable(test_integration test_integration.cpp
     ../src/proxy.cpp
@@ -83,6 +91,6 @@ if(APPLE)
     )
 endif()
 
-foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_retrieval test_integration)
+foreach(t test_memory_store test_injector test_config test_sticky test_cosine test_scoring test_retrieval test_hybrid test_integration)
     memorylayer_test_asserts(${t})
 endforeach()

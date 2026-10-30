@@ -30,6 +30,8 @@ void test_defaults() {
     assert(cfg.decay_days == 30);
     assert(cfg.decay_mode == memorylayer::DecayMode::Tiebreak);
     assert(cfg.target_coverage == 0.0f);
+    assert(!cfg.hybrid_search);
+    assert(cfg.rrf_k == 60);
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
     assert(cfg.memory_line_chars == 400);
@@ -98,7 +100,20 @@ void test_retrieval_options() {
     const char* non_numeric_coverage[] = {"memory-layer", "--embedding-model", "m.gguf",
                                           "--target-coverage", "high"};
     assert_parse_fails(non_numeric_coverage);
+
+    const char* invalid_rrf[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                 "--rrf-k", "0"};
+    assert_parse_fails(invalid_rrf);
     std::cout << "test_retrieval_options PASSED\n";
+}
+
+void test_hybrid_options() {
+    const char* argv[] = {"memory-layer", "--embedding-model", "m.gguf",
+                          "--hybrid-search", "--rrf-k", "25"};
+    const auto cfg = memorylayer::parse_args(6, const_cast<char**>(argv));
+    assert(cfg.hybrid_search);
+    assert(cfg.rrf_k == 25);
+    std::cout << "test_hybrid_options PASSED\n";
 }
 
 void test_custom_values() {
@@ -145,6 +160,7 @@ int main() {
     test_retrieval_options();
     test_defaults();
     test_custom_values();
+    test_hybrid_options();
     std::cout << "All config tests PASSED\n";
     return 0;
 }
