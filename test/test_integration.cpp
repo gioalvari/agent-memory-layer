@@ -293,7 +293,7 @@ void test_chat_completions_trims_history(const MockBackend& backend) {
     auto res = cli.Post("/v1/chat/completions", request.dump(), "application/json");
     assert(res);
     assert(res->status == 200);
-    const auto forwarded = json::parse(backend.last_body());
+    const auto forwarded = json::parse(backend.last_normal_body());
     const auto& messages = forwarded["messages"];
     assert(messages.size() == 2);
     assert(messages[0]["role"] == "system");
