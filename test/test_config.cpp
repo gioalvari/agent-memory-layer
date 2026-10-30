@@ -33,6 +33,8 @@ void test_defaults() {
     assert(cfg.gpu_layers == 99);
     assert(cfg.max_inject_tokens == 2048);
     assert(cfg.memory_line_chars == 400);
+    assert(cfg.history_budget == 0);
+    assert(cfg.history_trim_ratio == 0.5);
     // Default top-k memories at the default line length fit the default budget.
     assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
            cfg.max_inject_tokens);
@@ -140,8 +142,28 @@ void test_inject_mode() {
     std::cout << "test_inject_mode PASSED\n";
 }
 
+void test_history_budget_options() {
+    const char* valid[] = {"memory-layer", "--embedding-model", "m.gguf",
+                           "--history-budget", "1200", "--history-trim-ratio", "0.75"};
+    const auto cfg = memorylayer::parse_args(7, const_cast<char**>(valid));
+    assert(cfg.history_budget == 1200);
+    assert(cfg.history_trim_ratio == 0.75);
+
+    const char* negative_budget[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                     "--history-budget", "-1"};
+    assert_parse_fails(negative_budget);
+    const char* zero_ratio[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                "--history-trim-ratio", "0"};
+    assert_parse_fails(zero_ratio);
+    const char* high_ratio[] = {"memory-layer", "--embedding-model", "m.gguf",
+                                "--history-trim-ratio", "1.1"};
+    assert_parse_fails(high_ratio);
+    std::cout << "test_history_budget_options PASSED\n";
+}
+
 int main() {
     test_inject_mode();
+    test_history_budget_options();
     test_retrieval_options();
     test_defaults();
     test_custom_values();

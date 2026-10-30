@@ -92,6 +92,7 @@ public:
         cfg_.db_path = "test_integration.sqlite";
         cfg_.top_k = 3;
         cfg_.decay_days = 30;
+        cfg_.history_budget = 80;
 
         store_ = std::make_unique<memorylayer::MemoryStore>(cfg_.db_path);
         // Construct embedding worker on main thread (llama needs main thread for Metal init)
@@ -207,6 +208,34 @@ void test_chat_completions_with_agent_header() {
     std::cout << "test_chat_completions_with_agent_header PASSED\n";
 }
 
+void test_chat_completions_trims_history(const MockBackend& backend) {
+    httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
+    json request = {
+        {"model", "test-model"},
+        {"messages", json::array({
+            {{"role", "system"}, {"content", "Keep this instruction."}},
+            {{"role", "user"}, {"content", std::string(80, 'a')}},
+            {{"role", "assistant"}, {"content", std::string(80, 'b')}},
+            {{"role", "user"}, {"content", std::string(80, 'c')}},
+            {{"role", "assistant"}, {"content", std::string(80, 'd')}},
+            {{"role", "user"}, {"content", "latest request"}}
+        })}
+    };
+
+    auto res = cli.Post("/v1/chat/completions", request.dump(), "application/json");
+    assert(res);
+    assert(res->status == 200);
+    const auto forwarded = json::parse(backend.last_body());
+    const auto& messages = forwarded["messages"];
+    assert(messages.size() == 2);
+    assert(messages[0]["role"] == "system");
+    assert(messages[0]["content"].get<std::string>().find(
+               "4 earlier messages of this conversation were omitted") != std::string::npos);
+    assert(messages[1]["role"] == "user");
+    assert(messages[1]["content"] == "latest request");
+    std::cout << "test_chat_completions_trims_history PASSED\n";
+}
+
 void test_invalid_json_returns_400() {
     httplib::Client cli("http://localhost:" + std::to_string(PROXY_PORT));
     auto res = cli.Post("/v1/chat/completions", "not valid json {{{{", "application/json");
@@ -285,6 +314,7 @@ int main() {
     test_admin_debug_injection();
     test_chat_completions_passthrough();
     test_chat_completions_with_agent_header();
+    test_chat_completions_trims_history(backend);
     test_invalid_json_returns_400();
     test_missing_messages_returns_400();
     test_body_too_large_returns_413();
@@ -296,6 +326,6 @@ int main() {
     backend.stop();
 
     std::remove("test_integration.sqlite");
-    std::cout << "All integration tests PASSED (12 tests)\n";
+    std::cout << "All integration tests PASSED (13 tests)\n";
     return 0;
 }
