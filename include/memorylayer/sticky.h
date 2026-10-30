@@ -1,6 +1,7 @@
 #pragma once
 
 #include "memorylayer/memory_store.h"
+#include "memorylayer/token_counter.h"
 #include "json.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -76,6 +77,7 @@ struct StickyFormattedContext {
 StickyFormattedContext format_sticky_memory_context_budgeted(
     const std::vector<ScoredMemory>& memories, int max_tokens,
     int line_chars = kDefaultMemoryLineChars,
-    const std::vector<float>* query_embedding = nullptr);
+    const std::vector<float>* query_embedding = nullptr,
+    const TokenCounter& counter = {});
 
 } // namespace memorylayer

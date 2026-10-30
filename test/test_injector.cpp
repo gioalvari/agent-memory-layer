@@ -332,6 +332,15 @@ void test_facts_are_first_and_budgeted() {
     std::cout << "test_facts_are_first_and_budgeted PASSED\n";
 }
 
+void test_injectable_token_counter_budgets_context() {
+    const auto counter = [](const std::string&) -> std::optional<int> { return 5; };
+    auto memory = long_memory(100.0);
+    const auto context = memorylayer::format_memory_context_budgeted({memory}, 200.0, 14, 20,
+                                                                      false, counter);
+    assert(context.empty());
+    std::cout << "test_injectable_token_counter_budgets_context PASSED\n";
+}
+
 int main() {
     test_line_token_bound_holds();
     test_required_budget_fits_all_k_memories();
@@ -340,6 +349,7 @@ int main() {
     test_compression_orders_and_marks_gaps();
     test_compression_fallback_and_flag_off_format();
     test_facts_are_first_and_budgeted();
+    test_injectable_token_counter_budgets_context();
     test_inject_suffix_keeps_prefix_stable();
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();

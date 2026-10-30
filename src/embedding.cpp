@@ -76,27 +76,53 @@ void EmbeddingWorker::shutdown() {
 }
 
 std::vector<float> EmbeddingWorker::embed(const std::string& text, EmbedPriority priority) {
+    const auto embeddings = embed_batch({text}, priority);
+    return embeddings.empty() ? std::vector<float>{} : embeddings.front();
+}
+
+std::vector<std::vector<float>> EmbeddingWorker::embed_batch(
+    const std::vector<std::string>& texts, EmbedPriority priority) {
     if (!ready_) return {};
 
-    std::promise<std::vector<float>> promise;
-    auto future = promise.get_future();
+    std::vector<std::future<std::vector<float>>> futures;
+    futures.reserve(texts.size());
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (priority == EmbedPriority::HIGH) {
-            jobs_high_.push({text, std::move(promise)});
-        } else {
-            jobs_normal_.push({text, std::move(promise)});
+        for (const auto& text : texts) {
+            std::promise<std::vector<float>> promise;
+            futures.push_back(promise.get_future());
+            if (priority == EmbedPriority::HIGH) {
+                jobs_high_.push({text, std::move(promise)});
+            } else {
+                jobs_normal_.push({text, std::move(promise)});
+            }
         }
     }
-    cv_.notify_one();
+    cv_.notify_all();
 
-    if (future.wait_for(kEmbedTimeout) != std::future_status::ready) {
-        LOG_WARN("embedding", "Embedding request timed out after " +
-                 std::to_string(kEmbedTimeout.count()) + "s");
-        return {};
+    std::vector<std::vector<float>> embeddings;
+    embeddings.reserve(futures.size());
+    for (auto& future : futures) {
+        if (future.wait_for(kEmbedTimeout) != std::future_status::ready) {
+            LOG_WARN("embedding", "Embedding request timed out after " +
+                     std::to_string(kEmbedTimeout.count()) + "s");
+            embeddings.push_back({});
+        } else {
+            embeddings.push_back(future.get());
+        }
     }
-    return future.get();
+    return embeddings;
+}
+
+std::optional<int> EmbeddingWorker::token_count(const std::string& text) const {
+    if (!ready_ || !model_) return std::nullopt;
+    const auto* vocab = llama_model_get_vocab(static_cast<llama_model*>(model_));
+    const int capacity = static_cast<int>(text.size()) + 32;
+    std::vector<llama_token> tokens(capacity);
+    const int count = llama_tokenize(vocab, text.c_str(), text.size(), tokens.data(), capacity,
+                                     true, true);
+    return count >= 0 ? std::optional<int>(count) : std::nullopt;
 }
 
 void EmbeddingWorker::worker_loop() {

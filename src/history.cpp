@@ -8,26 +8,27 @@ namespace memorylayer {
 
 namespace {
 
-int estimate_message_tokens(const nlohmann::json& message) {
-    return static_cast<int>(message.dump().size()) / 4 + 1;
+int estimate_message_tokens(const nlohmann::json& message, const TokenCounter& counter) {
+    return count_tokens(message.dump(), counter);
 }
 
 } // namespace
 
-int estimate_non_system_message_tokens(const nlohmann::json& messages) {
+int estimate_non_system_message_tokens(const nlohmann::json& messages,
+                                       const TokenCounter& counter) {
     int tokens = 0;
     for (const auto& message : messages) {
         if (message.value("role", "") != "system") {
-            tokens += estimate_message_tokens(message);
+            tokens += estimate_message_tokens(message, counter);
         }
     }
     return tokens;
 }
 
 HistoryTrimResult trim_history(const nlohmann::json& messages, int budget,
-                               double trim_ratio) {
+                                double trim_ratio, const TokenCounter& counter) {
     HistoryTrimResult result{messages};
-    if (budget <= 0 || estimate_non_system_message_tokens(messages) <= budget) {
+    if (budget <= 0 || estimate_non_system_message_tokens(messages, counter) <= budget) {
         return result;
     }
 
@@ -45,7 +46,7 @@ HistoryTrimResult trim_history(const nlohmann::json& messages, int budget,
         int retained_tokens = 0;
         for (std::size_t index = candidate; index < messages.size(); ++index) {
             if (messages[index].value("role", "") != "system") {
-                retained_tokens += estimate_message_tokens(messages[index]);
+                retained_tokens += estimate_message_tokens(messages[index], counter);
             }
         }
         if (retained_tokens <= target) {

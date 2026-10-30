@@ -947,6 +947,42 @@ int MemoryStore::sentence_count(int64_t memory_id) const {
     return result;
 }
 
+std::vector<Memory> MemoryStore::list_memories_without_sentences(int limit) const {
+    if (limit <= 0) return {};
+    std::vector<int64_t> ids;
+    {
+        std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+        static constexpr const char* kSql = R"(
+            SELECT m.id FROM memories m
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memory_sentences s
+                WHERE s.memory_id = m.id AND s.side = 'u'
+            ) OR NOT EXISTS (
+                SELECT 1 FROM memory_sentences s
+                WHERE s.memory_id = m.id AND s.side = 'a'
+            )
+            ORDER BY m.id ASC LIMIT ?
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) return {};
+        sqlite3_bind_int(stmt, 1, limit);
+        while (sqlite3_step(stmt) == SQLITE_ROW) ids.push_back(sqlite3_column_int64(stmt, 0));
+        sqlite3_finalize(stmt);
+    }
+
+    std::vector<Memory> memories;
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    for (const int64_t id : ids) {
+        const auto it = std::find_if(cache_.begin(), cache_.end(), [id](const CachedEntry& entry) {
+            return entry.id == id;
+        });
+        if (it == cache_.end()) continue;
+        memories.push_back({it->id, it->agent_id, it->created_at, it->created_at,
+                            it->user_text, it->assist_text, {}, {}, it->access_count});
+    }
+    return memories;
+}
+
 MemoryStore::Stats MemoryStore::get_stats() const {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     Stats stats;

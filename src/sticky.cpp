@@ -49,8 +49,8 @@ std::string sticky_memory_line(const ScoredMemory& memory, int max_chars,
            user + " Response: " + assist;
 }
 
-int sticky_estimate_tokens(const std::string& text) {
-    return static_cast<int>(text.size()) / 4 + 1;
+int sticky_estimate_tokens(const std::string& text, const TokenCounter& counter) {
+    return count_tokens(text, counter);
 }
 
 } // namespace
@@ -173,13 +173,14 @@ std::vector<ScoredMemory> filter_excluded_memories(
 
 StickyFormattedContext format_sticky_memory_context_budgeted(
     const std::vector<ScoredMemory>& memories, int max_tokens, int line_chars,
-    const std::vector<float>* query_embedding) {
+    const std::vector<float>* query_embedding, const TokenCounter& counter) {
     StickyFormattedContext result;
     if (memories.empty()) return result;
 
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    const int budget = max_tokens - sticky_estimate_tokens(header) - sticky_estimate_tokens(footer);
+    const int budget = max_tokens - sticky_estimate_tokens(header, counter) -
+                       sticky_estimate_tokens(footer, counter);
     if (budget <= 0) return result;
 
     std::ostringstream output;
@@ -187,7 +188,7 @@ StickyFormattedContext format_sticky_memory_context_budgeted(
     int used_tokens = 0;
     for (const auto& memory : memories) {
         const std::string line = sticky_memory_line(memory, line_chars, query_embedding) + "\n";
-        const int line_tokens = sticky_estimate_tokens(line);
+        const int line_tokens = sticky_estimate_tokens(line, counter);
         if (used_tokens + line_tokens > budget) break;
         output << line;
         used_tokens += line_tokens;

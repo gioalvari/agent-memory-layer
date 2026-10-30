@@ -122,6 +122,9 @@ public:
                          const std::vector<MemorySentence>& sentences);
     void load_sentences(std::vector<ScoredMemory>& memories) const;
     int sentence_count(int64_t memory_id) const;
+    // Returns a bounded set of memories whose user or assistant side has no
+    // sentence rows. Used by the asynchronous compression backfill.
+    std::vector<Memory> list_memories_without_sentences(int limit) const;
     struct Stats {
         int total_memories;
         int total_agents;
