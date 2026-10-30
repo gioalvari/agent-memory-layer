@@ -91,6 +91,8 @@ wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nom
 
 Enable `--extract-facts` to send each newly saved exchange to the configured backend on a dedicated background worker. The worker asks for a small JSON list of durable user/project facts, embeds each accepted fact, and stores the latest value per normalized subject/attribute key. A changed value supersedes the older one rather than duplicating it. Facts are retrieved in the same agent namespace as memories and, within `--max-inject-tokens`, are injected first as `Known facts (latest values)` followed by relevant raw turns. Extraction calls go directly to the configured backend, so they are never recursively injected or saved as memories.
 
+With `--inject-mode sticky`, requests that retrieve facts use the regular memory-block injection path so the latest facts are present; they do not overwrite sticky-cache entries. Later sticky requests without facts continue to use their existing cached conversation blocks.
+
 ## Running with Ollama
 
 The easiest real-world setup uses [Ollama](https://ollama.ai) as the LLM backend:
