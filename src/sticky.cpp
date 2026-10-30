@@ -1,4 +1,5 @@
 #include "memorylayer/sticky.h"
+#include "memorylayer/injector.h"
 
 #include <algorithm>
 #include <ctime>
@@ -34,13 +35,21 @@ std::string utc_date(double timestamp) {
     return output.str();
 }
 
-std::string sticky_memory_line(const ScoredMemory& memory, int max_chars) {
+std::string sticky_memory_line(const ScoredMemory& memory, int max_chars,
+                               const std::vector<float>* query_embedding) {
+    const std::string user = query_embedding
+        ? compress_memory_side(memory.memory.user_text, memory.memory.user_sentences,
+                               *query_embedding, max_chars)
+        : truncate(memory.memory.user_text, max_chars);
+    const std::string assist = query_embedding
+        ? compress_memory_side(memory.memory.assist_text, memory.memory.assist_sentences,
+                               *query_embedding, max_chars)
+        : truncate(memory.memory.assist_text, max_chars);
     return "- [" + utc_date(memory.memory.created_at) + "] " +
-           truncate(memory.memory.user_text, max_chars) + " Response: " +
-           truncate(memory.memory.assist_text, max_chars);
+           user + " Response: " + assist;
 }
 
-int estimate_tokens(const std::string& text) {
+int sticky_estimate_tokens(const std::string& text) {
     return static_cast<int>(text.size()) / 4 + 1;
 }
 
@@ -163,21 +172,22 @@ std::vector<ScoredMemory> filter_excluded_memories(
 }
 
 StickyFormattedContext format_sticky_memory_context_budgeted(
-    const std::vector<ScoredMemory>& memories, int max_tokens, int line_chars) {
+    const std::vector<ScoredMemory>& memories, int max_tokens, int line_chars,
+    const std::vector<float>* query_embedding) {
     StickyFormattedContext result;
     if (memories.empty()) return result;
 
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    const int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    const int budget = max_tokens - sticky_estimate_tokens(header) - sticky_estimate_tokens(footer);
     if (budget <= 0) return result;
 
     std::ostringstream output;
     output << header;
     int used_tokens = 0;
     for (const auto& memory : memories) {
-        const std::string line = sticky_memory_line(memory, line_chars) + "\n";
-        const int line_tokens = estimate_tokens(line);
+        const std::string line = sticky_memory_line(memory, line_chars, query_embedding) + "\n";
+        const int line_tokens = sticky_estimate_tokens(line);
         if (used_tokens + line_tokens > budget) break;
         output << line;
         used_tokens += line_tokens;

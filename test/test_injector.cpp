@@ -175,9 +175,79 @@ void test_required_budget_fits_all_k_memories() {
     std::cout << "test_required_budget_fits_all_k_memories PASSED\n";
 }
 
+memorylayer::MemorySentence sentence(int idx, int start, int end,
+                                     std::vector<float> embedding) {
+    return {idx, start, end, std::move(embedding)};
+}
+
+void test_sentence_splitter_edge_cases() {
+    const std::string unicode = u8"Café downtown is open until midnight. 東京 station is open throughout the evening!";
+    const auto unicode_parts = memorylayer::split_memory_sentences(unicode);
+    assert(unicode_parts.size() == 2);
+    assert(unicode.substr(unicode_parts[0].start_byte,
+                         unicode_parts[0].end_byte - unicode_parts[0].start_byte) ==
+               "Café downtown is open until midnight.");
+
+    const auto no_punctuation = memorylayer::split_memory_sentences("one continuous thought without punctuation");
+    assert(no_punctuation.size() == 1);
+
+    const auto code = memorylayer::split_memory_sentences("Before context is sufficiently long.\n```\nx = 1; y = 2;\n```\nAfter context is sufficiently long.");
+    assert(code.size() == 3);
+    assert(code[1].start_byte < static_cast<int>(std::string("Before context is sufficiently long.\n```").size()));
+
+    const auto long_parts = memorylayer::split_memory_sentences(std::string(350, 'a') + " " + std::string(350, 'b'));
+    assert(long_parts.size() >= 2);
+    for (const auto& part : long_parts) assert(part.end_byte - part.start_byte <= 300);
+    std::cout << "test_sentence_splitter_edge_cases PASSED\n";
+}
+
+void test_compression_selects_relevant_later_sentence() {
+    const std::string text = "This opening sentence is unrelated filler. The deployment uses blue green rollout safely.";
+    const int later = static_cast<int>(text.find("The deployment"));
+    std::vector<memorylayer::MemorySentence> sentences = {
+        sentence(0, 0, later - 1, {1.0f, 0.0f}),
+        sentence(1, later, static_cast<int>(text.size()), {0.0f, 1.0f}),
+    };
+    const auto compressed = memorylayer::compress_memory_side(text, sentences, {0.0f, 1.0f}, 60);
+    assert(compressed.find("deployment") != std::string::npos);
+    assert(compressed.find("unrelated") == std::string::npos);
+    std::cout << "test_compression_selects_relevant_later_sentence PASSED\n";
+}
+
+void test_compression_orders_and_marks_gaps() {
+    const std::string text = "Alpha context is meaningful. Beta context is meaningful. Gamma context is meaningful.";
+    const int beta = static_cast<int>(text.find("Beta"));
+    const int gamma = static_cast<int>(text.find("Gamma"));
+    std::vector<memorylayer::MemorySentence> sentences = {
+        sentence(0, 0, beta - 1, {0.8f, 0.0f}),
+        sentence(1, beta, gamma - 1, {0.0f, 0.1f}),
+        sentence(2, gamma, static_cast<int>(text.size()), {1.0f, 0.0f}),
+    };
+    const auto compressed = memorylayer::compress_memory_side(text, sentences, {1.0f, 0.0f}, 65);
+    assert(compressed.find("Alpha") < compressed.find("Gamma"));
+    assert(compressed.find(" … ") != std::string::npos);
+    std::cout << "test_compression_orders_and_marks_gaps PASSED\n";
+}
+
+void test_compression_fallback_and_flag_off_format() {
+    const std::string text = u8"ééé relevant later sentence";
+    const auto fallback = memorylayer::compress_memory_side(text, {}, {1.0f}, 5);
+    assert(fallback == u8"éé...");
+
+    auto memory = long_memory(static_cast<double>(std::time(nullptr)) - 60.0);
+    const auto normal = memorylayer::format_memory_context_budgeted({memory}, 0.0, 2048, 50);
+    const auto legacy = memorylayer::format_memory_context_budgeted({memory}, 0.0, 2048, 50);
+    assert(normal == legacy);
+    std::cout << "test_compression_fallback_and_flag_off_format PASSED\n";
+}
+
 int main() {
     test_line_token_bound_holds();
     test_required_budget_fits_all_k_memories();
+    test_sentence_splitter_edge_cases();
+    test_compression_selects_relevant_later_sentence();
+    test_compression_orders_and_marks_gaps();
+    test_compression_fallback_and_flag_off_format();
     test_inject_suffix_keeps_prefix_stable();
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();

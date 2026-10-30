@@ -27,7 +27,8 @@ static void print_usage() {
               << "  --gpu-layers <n>            GPU layers for embedding model (default: 99)\n"
               << "  --max-inject-tokens <n>     Max tokens for injected memory context (default: 2048;\n"
               << "                              raised to fit all k memories with --target-coverage)\n"
-              << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 400)\n"
+               << "  --memory-line-chars <n>     Bytes kept per user/assistant side of a memory (default: 400)\n"
+               << "  --compress-memories         Extract query-relevant sentences instead of head truncation\n"
               << "  --admin-token <token>       Bearer token required for /admin/* endpoints (default: none)\n"
               << "  --memory-ttl-days <n>       Auto-delete memories older than N days (default: 0=disabled)\n"
                << "  --similarity-threshold <f>  Minimum cosine similarity to inject a memory (default: 0.3)\n"
@@ -95,6 +96,8 @@ Config parse_args(int argc, char* argv[]) {
             cfg.max_inject_tokens_explicit = true;
         } else if (strcmp(arg, "--memory-line-chars") == 0 && i + 1 < argc) {
             cfg.memory_line_chars = std::atoi(argv[++i]);
+        } else if (strcmp(arg, "--compress-memories") == 0) {
+            cfg.compress_memories = true;
         } else if (strcmp(arg, "--admin-token") == 0 && i + 1 < argc) {
             cfg.admin_token = argv[++i];
         } else if (strcmp(arg, "--memory-ttl-days") == 0 && i + 1 < argc) {

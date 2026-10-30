@@ -39,6 +39,7 @@ void test_defaults() {
     assert(cfg.history_trim_ratio == 0.5);
     assert(cfg.temporal_boost == 0.0f);
     assert(!cfg.absolute_dates);
+    assert(!cfg.compress_memories);
     // Default top-k memories at the default line length fit the default budget.
     assert(memorylayer::required_inject_tokens(cfg.top_k, cfg.memory_line_chars) <=
            cfg.max_inject_tokens);
@@ -191,15 +192,21 @@ void test_temporal_options() {
     std::cout << "test_temporal_options PASSED\n";
 }
 
+void test_compress_memories_flag() {
+    const char* argv[] = {"memory-layer", "--embedding-model", "m.gguf", "--compress-memories"};
+    assert(memorylayer::parse_args(4, const_cast<char**>(argv)).compress_memories);
+    std::cout << "test_compress_memories_flag PASSED\n";
+}
+
 int main() {
     test_inject_mode();
     test_history_budget_options();
     test_temporal_options();
-    test_history_budget_options();
     test_retrieval_options();
     test_defaults();
     test_custom_values();
     test_hybrid_options();
+    test_compress_memories_flag();
     std::cout << "All config tests PASSED\n";
     return 0;
 }

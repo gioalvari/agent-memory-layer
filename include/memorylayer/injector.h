@@ -17,6 +17,16 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
                                             double now_unix, int max_tokens,
                                             int line_chars = kDefaultMemoryLineChars,
                                             bool absolute_dates = false);
+// Deterministic UTF-8-safe sentence spans used for storage and compression.
+std::vector<MemorySentence> split_memory_sentences(const std::string& text);
+std::string compress_memory_side(const std::string& text,
+                                 const std::vector<MemorySentence>& sentences,
+                                 const std::vector<float>& query_embedding,
+                                 int max_chars);
+std::string format_memory_context_budgeted_compressed(
+    const std::vector<ScoredMemory>& memories, const std::vector<float>& query_embedding,
+    double now_unix, int max_tokens, int line_chars = kDefaultMemoryLineChars,
+    bool absolute_dates = false);
 enum class InjectMode {
     System,  // append to the system prompt (inserted if missing)
     Suffix,  // prepend to the last user message; earlier messages are untouched
