@@ -424,7 +424,9 @@ void test_fact_extraction_end_to_end(MockBackend& backend) {
     assert(injected.find("favorite editor: helix") != std::string::npos);
     assert(injected.find("favorite editor: vim") == std::string::npos);
 
-    assert(wait_until([&] { return proxy.store().count("fact-agent") == 4; }));
+    assert(wait_until([&] {
+        return proxy.store().list_memories("fact-agent", 20).size() == 4;
+    }));
     const auto memories = proxy.store().list_memories("fact-agent", 20);
     assert(memories.size() == 4);
     for (const auto& body : backend.request_bodies()) {
