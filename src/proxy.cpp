@@ -129,8 +129,11 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     int effective_top_k = coverage_mode
         ? max_calibrated_top_k(cfg_.target_coverage, cfg_.decay_mode, cfg_.adaptive_k)
         : cfg_.top_k;
+    int injection_budget = cfg_.max_inject_tokens;
     if (cfg_.max_context_tokens > 0) {
-        int budget = cfg_.max_context_tokens - estimate_non_system_message_tokens(messages);
+        const int budget = std::max(
+            0, cfg_.max_context_tokens - estimate_non_system_message_tokens(messages));
+        injection_budget = std::min(injection_budget, budget);
         // Each memory is ~max_inject_tokens/top_k tokens; scale down if over budget
         if (budget < cfg_.max_inject_tokens) {
             int tokens_per_mem = std::max(1, cfg_.max_inject_tokens /
@@ -204,7 +207,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     std::vector<int64_t> injected_ids;
     if (sticky_mode && facts.empty()) {
         const StickyFormattedContext formatted =
-            format_sticky_memory_context_budgeted(memories, cfg_.max_inject_tokens,
+            format_sticky_memory_context_budgeted(memories, injection_budget,
                                                    cfg_.memory_line_chars,
                                                    cfg_.compress_memories ? &query_emb : nullptr);
         context = formatted.block;
@@ -219,12 +222,12 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         context = facts.empty()
             ? (cfg_.compress_memories
             ? format_memory_context_budgeted_compressed(
-                   memories, query_emb, now, cfg_.max_inject_tokens,
+                   memories, query_emb, now, injection_budget,
                    cfg_.memory_line_chars, cfg_.absolute_dates)
-            : format_memory_context_budgeted(memories, now, cfg_.max_inject_tokens,
+            : format_memory_context_budgeted(memories, now, injection_budget,
                                              cfg_.memory_line_chars, cfg_.absolute_dates))
             : format_fact_memory_context_budgeted(
-                   facts, memories, now, cfg_.max_inject_tokens, cfg_.memory_line_chars,
+                   facts, memories, now, injection_budget, cfg_.memory_line_chars,
                    cfg_.compress_memories ? &query_emb : nullptr, cfg_.absolute_dates);
         if (anthropic_messages) {
             inject_anthropic_memories(request, context, parse_inject_mode(cfg_.inject_mode));
@@ -286,7 +289,15 @@ void MemoryProxy::fact_loop() {
         {
             std::unique_lock<std::mutex> lock(fact_mutex_);
             fact_cv_.wait(lock, [this] { return stop_ || !fact_queue_.empty(); });
-            if (stop_ && fact_queue_.empty()) return;
+            if (stop_) {
+                const std::size_t dropped = fact_queue_.size();
+                while (!fact_queue_.empty()) fact_queue_.pop();
+                if (dropped > 0) {
+                    LOG_WARN("facts", "Dropping " + std::to_string(dropped) +
+                             " queued fact extraction jobs during shutdown");
+                }
+                return;
+            }
             job = std::move(fact_queue_.front());
             fact_queue_.pop();
         }
@@ -295,7 +306,7 @@ void MemoryProxy::fact_loop() {
         json request = {{"model", model}, {"stream", false}, {"temperature", 0},
                         {"messages", json::array({{{"role", "user"}, {"content", fact_extraction_prompt(job.user_text, job.assist_text)}}})}};
         httplib::Client backend(cfg_.backend_url);
-        backend.set_read_timeout(300);
+        backend.set_read_timeout(30);
         backend.set_connection_timeout(10);
         const auto response = backend.Post("/v1/chat/completions", request.dump(), "application/json");
         if (!response || response->status != 200) { LOG_WARN("facts", "Fact extraction backend call failed"); continue; }
@@ -340,7 +351,10 @@ void MemoryProxy::saver_loop() {
             int64_t dup_id = store_.find_duplicate(user_emb, cfg_.dedup_threshold, job.agent_id);
             if (dup_id > 0) {
                 store_.touch(dup_id);
-                enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text, job.model, dup_id});
+                if (!job.model.empty() || !cfg_.fact_model.empty()) {
+                    enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text,
+                                             job.model, dup_id});
+                }
                 LOG_INFO("memory", "Deduplicated: merged with memory #" + std::to_string(dup_id));
             } else {
                 const int64_t memory_id = store_.insert(job.agent_id, job.user_text, job.assist_text,
@@ -360,7 +374,10 @@ void MemoryProxy::saver_loop() {
                     }
                 }
                 store_.evict(job.agent_id);
-                if (memory_id > 0) enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text, job.model, memory_id});
+                if (memory_id > 0 && (!job.model.empty() || !cfg_.fact_model.empty())) {
+                    enqueue_fact_extraction({job.agent_id, job.user_text, job.assist_text,
+                                             job.model, memory_id});
+                }
                 LOG_INFO("memory", "Saved new memory for agent='" +
                          (job.agent_id.empty() ? "global" : job.agent_id) + "'");
             }
@@ -1030,7 +1047,8 @@ setInterval(refresh,10000);
                         }
                     }
                     if (!assist_text.empty()) {
-                        enqueue_save(agent_id, user_text, assist_text, user_text, model);
+                        enqueue_save(agent_id, user_text, assist_text, user_text,
+                                     cfg_.fact_model.empty() ? "" : cfg_.fact_model);
                     }
                 } catch (const std::exception& e) {
                     LOG_WARN("proxy", std::string("Failed to parse backend response for memory save: ") +
@@ -1045,7 +1063,7 @@ setInterval(refresh,10000);
         const std::string backend_url = cfg_.backend_url;
         res.set_chunked_content_provider(
             "text/event-stream",
-            [this, backend_headers, modified_body, backend_url, agent_id_copy, user_text_copy, model]
+            [this, backend_headers, modified_body, backend_url, agent_id_copy, user_text_copy]
             (size_t /*offset*/, httplib::DataSink& sink) -> bool {
                 httplib::Client backend(backend_url);
                 backend.set_read_timeout(300);
@@ -1090,7 +1108,7 @@ setInterval(refresh,10000);
 
                 if (!accumulated_content.empty() && !user_text_copy.empty()) {
                     enqueue_save(agent_id_copy, user_text_copy, accumulated_content, user_text_copy,
-                                 model);
+                                 cfg_.fact_model.empty() ? "" : cfg_.fact_model);
                 }
                 sink.done();
                 return false;

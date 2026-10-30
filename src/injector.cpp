@@ -299,43 +299,79 @@ std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& f
     }
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    const int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
     if (budget <= 0) return "";
     std::ostringstream oss;
-    oss << header << "Known facts (latest values):\n";
-    int used = estimate_tokens("Known facts (latest values):\n");
+    int used = 0;
+    bool wrote_content = false;
+    const std::string facts_header = "Known facts (latest values):\n";
+    bool wrote_facts_header = false;
     for (const auto& scored : facts) {
         const auto& fact = scored.fact;
-        std::string line = "- " + fact.subject + " " + fact.attribute + ": " + fact.value +
-                           " (as of " + format_time_ago(now_unix - fact.created_at) + ")\n";
+        const std::string line = "- " + fact.subject + " " + fact.attribute + ": " + fact.value +
+                                 " (as of " + format_time_ago(now_unix - fact.created_at) + ")\n";
         const int tokens = estimate_tokens(line);
-        if (used + tokens > budget) break;
+        const int header_tokens = wrote_facts_header ? 0 : estimate_tokens(facts_header);
+        if (used + header_tokens + tokens > budget) break;
+        if (!wrote_facts_header) {
+            oss << facts_header;
+            used += header_tokens;
+            wrote_facts_header = true;
+        }
         oss << line;
         used += tokens;
+        wrote_content = true;
     }
     if (!memories.empty()) {
-        oss << "Relevant conversation memories:\n";
-        used += estimate_tokens("Relevant conversation memories:\n");
+        const std::string memories_header = "Relevant conversation memories:\n";
+        bool wrote_memories_header = false;
         for (const auto& memory : memories) {
-            ScoredMemory formatted = memory;
             if (query_embedding) {
-                formatted.memory.user_text = compress_memory_side(
+                const std::string user = compress_memory_side(
                     memory.memory.user_text, memory.memory.user_sentences, *query_embedding,
                     line_chars);
-                formatted.memory.assist_text = compress_memory_side(
+                const std::string assist = compress_memory_side(
                     memory.memory.assist_text, memory.memory.assist_sentences, *query_embedding,
                     line_chars);
+                const std::string timestamp = absolute_dates
+                    ? utc_date(memory.memory.created_at) + ", " +
+                          format_time_ago(now_unix - memory.memory.created_at)
+                    : format_time_ago(now_unix - memory.memory.created_at);
+                const std::string line = "- [" + timestamp + "] " + user +
+                                         " Response: " + assist + "\n";
+                const int tokens = estimate_tokens(line);
+                const int header_tokens = wrote_memories_header
+                    ? 0 : estimate_tokens(memories_header);
+                if (used + header_tokens + tokens > budget) break;
+                if (!wrote_memories_header) {
+                    oss << memories_header;
+                    used += header_tokens;
+                    wrote_memories_header = true;
+                }
+                oss << line;
+                used += tokens;
+                wrote_content = true;
+                continue;
             }
-            const std::string line = format_memory_line(formatted, now_unix, line_chars,
+            const std::string line = format_memory_line(memory, now_unix, line_chars,
                                                         absolute_dates) + "\n";
             const int tokens = estimate_tokens(line);
-            if (used + tokens > budget) break;
+            const int header_tokens = wrote_memories_header ? 0 : estimate_tokens(memories_header);
+            if (used + header_tokens + tokens > budget) break;
+            if (!wrote_memories_header) {
+                oss << memories_header;
+                used += header_tokens;
+                wrote_memories_header = true;
+            }
             oss << line;
             used += tokens;
+            wrote_content = true;
         }
     }
-    oss << footer;
-    return oss.str();
+    if (!wrote_content) return "";
+    std::ostringstream context;
+    context << header << oss.str() << footer;
+    return context.str();
 }
 
 InjectMode parse_inject_mode(const std::string& mode) {

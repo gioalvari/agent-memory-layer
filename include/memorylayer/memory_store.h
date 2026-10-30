@@ -162,8 +162,9 @@ private:
     int emb_dim_ = 0;
     mutable int holes_count_ = 0;   // entries erased from cache_ but not yet recompacted
     mutable std::mutex cache_mutex_;
-    mutable std::mutex db_mutex_;
-    mutable std::mutex facts_mutex_;
+    // SQLite connection and fact cache are shared by saver and fact-worker
+    // threads. Recursive locking keeps compound helpers on one connection safe.
+    mutable std::recursive_mutex db_mutex_;
     std::vector<Fact> facts_cache_;
 
     void load_cache();

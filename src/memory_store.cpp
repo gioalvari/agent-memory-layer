@@ -59,6 +59,7 @@ MemoryStore::~MemoryStore() {
 }
 
 void MemoryStore::init_schema() {
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     const char* sql = R"(
         CREATE TABLE IF NOT EXISTS memories (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +159,7 @@ void MemoryStore::init_schema() {
 }
 
 void MemoryStore::store_memory_dates(int64_t memory_id, const std::vector<int64_t>& days) {
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     const char* sql = "INSERT OR IGNORE INTO memory_dates (memory_id, day) VALUES (?, ?)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
@@ -171,6 +173,7 @@ void MemoryStore::store_memory_dates(int64_t memory_id, const std::vector<int64_
 }
 
 void MemoryStore::backfill_memory_dates() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = R"(
         SELECT m.id, m.created_at, m.user_text, m.assist_text
         FROM memories m
@@ -210,6 +213,7 @@ std::string make_fact_key(const std::string& subject, const std::string& attribu
 }
 
 void MemoryStore::load_facts_cache() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = "SELECT id, agent_id, subject, attribute, value, key, source_memory_id, created_at, superseded_by, embedding FROM facts ORDER BY id";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
@@ -235,7 +239,7 @@ int64_t MemoryStore::insert_fact(const std::string& agent_id, const std::string&
     if (embedding.empty()) return -1;
     const std::string key = make_fact_key(subject, attribute);
     const std::string normalized_value = normalize_fact_component(value);
-    std::lock_guard<std::mutex> lock(facts_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     int64_t old_id = -1;
     for (const auto& fact : facts_cache_) {
         if (!fact.superseded_by && fact.agent_id == agent_id && fact.key == key) {
@@ -270,7 +274,7 @@ std::vector<ScoredFact> MemoryStore::search_facts(const std::vector<float>& quer
     std::vector<float> q = query_emb; float norm = 0.0f;
     for (float v : q) norm += v * v; norm = std::sqrt(norm); if (norm > 0) for (float& v : q) v /= norm;
     std::vector<ScoredFact> results;
-    std::lock_guard<std::mutex> lock(facts_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     for (const auto& fact : facts_cache_) {
         if (fact.superseded_by || fact.embedding.size() != q.size()) continue;
         if ((!agent_id.empty() && !fact.agent_id.empty() && fact.agent_id != agent_id) || (agent_id.empty() && !fact.agent_id.empty())) continue;
@@ -283,7 +287,7 @@ std::vector<ScoredFact> MemoryStore::search_facts(const std::vector<float>& quer
 }
 
 std::vector<Fact> MemoryStore::list_facts(const std::string& agent_id, bool include_superseded, int limit) const {
-    std::lock_guard<std::mutex> lock(facts_mutex_); std::vector<Fact> results;
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_); std::vector<Fact> results;
     for (auto it = facts_cache_.rbegin(); it != facts_cache_.rend() && static_cast<int>(results.size()) < limit; ++it) {
         if (!agent_id.empty() && it->agent_id != agent_id) continue;
         if (!include_superseded && it->superseded_by) continue;
@@ -293,7 +297,7 @@ std::vector<Fact> MemoryStore::list_facts(const std::string& agent_id, bool incl
 }
 
 bool MemoryStore::remove_fact(int64_t fact_id) {
-    std::lock_guard<std::mutex> lock(facts_mutex_); sqlite3_stmt* stmt = nullptr;
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_); sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "DELETE FROM facts WHERE id = ?", -1, &stmt, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_int64(stmt, 1, fact_id); sqlite3_step(stmt); const bool removed = sqlite3_changes(db_) > 0; sqlite3_finalize(stmt);
     if (removed) facts_cache_.erase(std::remove_if(facts_cache_.begin(), facts_cache_.end(), [fact_id](const Fact& fact) { return fact.id == fact_id; }), facts_cache_.end());
@@ -301,6 +305,7 @@ bool MemoryStore::remove_fact(int64_t fact_id) {
 }
 
 void MemoryStore::load_cache() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = "SELECT id, agent_id, created_at, user_text, assist_text, user_emb, assist_emb, access_count FROM memories ORDER BY id";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -381,6 +386,7 @@ int64_t MemoryStore::insert(const std::string& agent_id,
                              const std::vector<float>& user_emb,
                              const std::vector<float>& assist_emb,
                              std::optional<double> created_at) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = R"(
         INSERT INTO memories (agent_id, created_at, updated_at, user_text, assist_text, user_emb, assist_emb)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -428,6 +434,7 @@ int64_t MemoryStore::insert(const std::string& agent_id,
 }
 
 int MemoryStore::count(const std::string& agent_id) const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = agent_id.empty()
         ? "SELECT COUNT(*) FROM memories WHERE agent_id IS NULL"
         : "SELECT COUNT(*) FROM memories WHERE agent_id = ?";
@@ -451,6 +458,7 @@ int MemoryStore::count(const std::string& agent_id) const {
 }
 
 void MemoryStore::touch(int64_t memory_id) {
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     const char* sql = "UPDATE memories SET updated_at = ?, access_count = access_count + 1 WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -477,6 +485,7 @@ void MemoryStore::touch(int64_t memory_id) {
 }
 
 void MemoryStore::evict(const std::string& agent_id) {
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     int limit = agent_id.empty() ? max_global_ : max_per_agent_;
     int current = count(agent_id);
     if (current <= limit) return;
@@ -520,7 +529,6 @@ void MemoryStore::evict(const std::string& agent_id) {
         }
         sqlite3_finalize(dates_stmt);
     }
-
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "DELETE FROM memories WHERE id = ?", -1, &stmt, nullptr) !=
         SQLITE_OK) {
@@ -535,6 +543,22 @@ void MemoryStore::evict(const std::string& agent_id) {
         sqlite3_reset(stmt);
     }
     sqlite3_finalize(stmt);
+
+    sqlite3_stmt* facts_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM facts WHERE source_memory_id = ?", -1,
+                           &facts_stmt, nullptr) == SQLITE_OK) {
+        for (const int64_t id : ids_to_remove) {
+            sqlite3_bind_int64(facts_stmt, 1, id);
+            sqlite3_step(facts_stmt);
+            sqlite3_reset(facts_stmt);
+        }
+        sqlite3_finalize(facts_stmt);
+        facts_cache_.erase(std::remove_if(facts_cache_.begin(), facts_cache_.end(),
+            [&ids_to_remove](const Fact& fact) {
+                return std::find(ids_to_remove.begin(), ids_to_remove.end(),
+                                 fact.source_memory_id) != ids_to_remove.end();
+            }), facts_cache_.end());
+    }
 
     // Remove from cache and trigger lazy recompaction
     std::lock_guard<std::mutex> lock(cache_mutex_);
@@ -670,7 +694,8 @@ HybridSearchResult MemoryStore::search_hybrid(const std::vector<float>& query_em
                                                std::optional<double> supplied_now) const {
     const int candidate_count = std::max(50, 4 * top_k);
     auto dense = search(query_emb, agent_id, candidate_count, min_score, decay_days,
-                        agent_boost, decay_mode);
+                        agent_boost, decay_mode, temporal_window, temporal_boost,
+                        supplied_now);
     HybridSearchResult result;
     if (!dense.empty()) result.dense_top_similarity = dense.front().similarity;
 
@@ -691,6 +716,7 @@ HybridSearchResult MemoryStore::search_hybrid(const std::vector<float>& query_em
         ORDER BY bm25(memories_fts)
         LIMIT ?
     )";
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, lexical_sql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, match_query.c_str(), -1, SQLITE_TRANSIENT);
@@ -737,23 +763,6 @@ HybridSearchResult MemoryStore::search_hybrid(const std::vector<float>& query_em
         auto found = by_id.find(id);
         if (found == by_id.end()) continue;
         found->second.score = score;
-        if (temporal_window) {
-            const auto& memory = found->second.memory;
-            bool temporal_match = utc_day(memory.created_at) >= temporal_window->start_day &&
-                                  utc_day(memory.created_at) < temporal_window->end_day;
-            if (!temporal_match) {
-                std::lock_guard<std::mutex> lock(cache_mutex_);
-                const auto cached = std::find_if(cache_.begin(), cache_.end(),
-                    [&memory](const CachedEntry& entry) { return entry.id == memory.id; });
-                temporal_match = cached != cache_.end() && std::any_of(
-                    cached->mentioned_days.begin(), cached->mentioned_days.end(),
-                    [&temporal_window](int64_t day) {
-                        return day >= temporal_window->start_day &&
-                               day < temporal_window->end_day;
-                    });
-            }
-            if (temporal_match) found->second.score += temporal_boost;
-        }
         result.memories.push_back(std::move(found->second));
     }
     std::sort(result.memories.begin(), result.memories.end(),
@@ -826,12 +835,23 @@ std::vector<Memory> MemoryStore::list_memories(const std::string& agent_id, int 
 }
 
 bool MemoryStore::remove(int64_t memory_id) {
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
     sqlite3_stmt* dates_stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "DELETE FROM memory_dates WHERE memory_id = ?", -1,
                            &dates_stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_int64(dates_stmt, 1, memory_id);
         sqlite3_step(dates_stmt);
         sqlite3_finalize(dates_stmt);
+    }
+    sqlite3_stmt* facts_stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "DELETE FROM facts WHERE source_memory_id = ?", -1,
+                           &facts_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(facts_stmt, 1, memory_id);
+        sqlite3_step(facts_stmt);
+        sqlite3_finalize(facts_stmt);
+        facts_cache_.erase(std::remove_if(facts_cache_.begin(), facts_cache_.end(),
+            [memory_id](const Fact& fact) { return fact.source_memory_id == memory_id; }),
+            facts_cache_.end());
     }
     const char* sql = "DELETE FROM memories WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
@@ -858,7 +878,7 @@ bool MemoryStore::remove(int64_t memory_id) {
 void MemoryStore::store_sentences(int64_t memory_id, char side,
                                   const std::vector<MemorySentence>& sentences) {
     if (sentences.empty() || (side != 'u' && side != 'a')) return;
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = R"(
         INSERT OR REPLACE INTO memory_sentences
             (memory_id, side, idx, start_byte, end_byte, embedding)
@@ -887,7 +907,7 @@ void MemoryStore::store_sentences(int64_t memory_id, char side,
 
 void MemoryStore::load_sentences(std::vector<ScoredMemory>& memories) const {
     if (memories.empty()) return;
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const char* sql = R"(
         SELECT side, idx, start_byte, end_byte, embedding
         FROM memory_sentences WHERE memory_id = ? ORDER BY side, idx
@@ -917,7 +937,7 @@ void MemoryStore::load_sentences(std::vector<ScoredMemory>& memories) const {
 }
 
 int MemoryStore::sentence_count(int64_t memory_id) const {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM memory_sentences WHERE memory_id = ?",
                            -1, &stmt, nullptr) != SQLITE_OK) return 0;
@@ -981,6 +1001,7 @@ void MemoryStore::recompact_embeddings() {    // Caller must hold cache_mutex_
 
 void MemoryStore::purge_expired(int ttl_days) {
     if (ttl_days <= 0) return;
+    std::lock_guard<std::recursive_mutex> db_lock(db_mutex_);
 
     const double cutoff = static_cast<double>(std::time(nullptr)) - ttl_days * 86400.0;
 
@@ -1016,6 +1037,21 @@ void MemoryStore::purge_expired(int ttl_days) {
             sqlite3_bind_int64(del_stmt, 1, id);
             sqlite3_step(del_stmt);
             sqlite3_reset(del_stmt);
+        }
+        sqlite3_stmt* facts_stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM facts WHERE source_memory_id = ?", -1,
+                               &facts_stmt, nullptr) == SQLITE_OK) {
+            for (const int64_t id : to_delete) {
+                sqlite3_bind_int64(facts_stmt, 1, id);
+                sqlite3_step(facts_stmt);
+                sqlite3_reset(facts_stmt);
+            }
+            sqlite3_finalize(facts_stmt);
+            facts_cache_.erase(std::remove_if(facts_cache_.begin(), facts_cache_.end(),
+                [&to_delete](const Fact& fact) {
+                    return std::find(to_delete.begin(), to_delete.end(), fact.source_memory_id) !=
+                           to_delete.end();
+                }), facts_cache_.end());
         }
         if (dates_stmt) sqlite3_finalize(dates_stmt);
         sqlite3_finalize(del_stmt);
