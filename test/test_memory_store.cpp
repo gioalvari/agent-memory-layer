@@ -166,6 +166,43 @@ void test_fact_keys_and_supersession() {
     std::cout << "test_fact_keys_and_supersession PASSED\n";
 }
 
+void test_hybrid_temporal_boost_stays_within_dense_ranking() {
+    std::remove("test_hybrid_temporal.sqlite");
+    memorylayer::MemoryStore store("test_hybrid_temporal.sqlite");
+    const double now = 1709596800.0;
+    const std::vector<float> query = {1.0f, 0.0f};
+    const int64_t strong = store.insert("agent", "prioritytoken", "strong match",
+                                        {0.8f, 0.6f}, {0.8f, 0.6f}, now - 20 * 86400.0);
+    const int64_t dated = store.insert("agent", "unrelated", "March 4, 2024",
+                                       {0.6f, 0.8f}, {0.6f, 0.8f}, now - 20 * 86400.0);
+    const memorylayer::TemporalWindow window{memorylayer::utc_day(now) - 1,
+                                               memorylayer::utc_day(now)};
+
+    const auto dense = store.search(query, "agent", 2, 0.3f, 30, 1.0f,
+                                    memorylayer::DecayMode::Tiebreak, window, 0.3f, now);
+    assert(dense.size() == 2 && dense[0].memory.id == dated);
+
+    const auto hybrid = store.search_hybrid(query, "prioritytoken", "agent", 2, 0.3f, 30,
+                                            1.0f, 60, memorylayer::DecayMode::Tiebreak,
+                                            window, 0.3f, now);
+    assert(hybrid.memories.size() == 2);
+    assert(hybrid.memories[0].memory.id == strong);
+    assert(hybrid.memories[1].memory.id == dated);
+    std::remove("test_hybrid_temporal.sqlite");
+    std::cout << "test_hybrid_temporal_boost_stays_within_dense_ranking PASSED\n";
+}
+
+void test_memory_deletion_removes_derived_facts() {
+    std::remove("test_fact_cleanup.sqlite");
+    memorylayer::MemoryStore store("test_fact_cleanup.sqlite");
+    const auto id = store.insert("agent", "question", "answer", make_emb(0.1f), make_emb(0.2f));
+    assert(store.insert_fact("agent", "Project", "language", "C++", id, make_emb(0.3f)) > 0);
+    assert(store.remove(id));
+    assert(store.list_facts("agent", true).empty());
+    std::remove("test_fact_cleanup.sqlite");
+    std::cout << "test_memory_deletion_removes_derived_facts PASSED\n";
+}
+
 int main() {
     test_insert_and_count();
     test_eviction();
@@ -174,6 +211,8 @@ int main() {
     test_sentence_rows_delete_with_memory();
     test_sentence_rows_delete_with_eviction();
     test_fact_keys_and_supersession();
+    test_hybrid_temporal_boost_stays_within_dense_ranking();
+    test_memory_deletion_removes_derived_facts();
     std::cout << "All memory_store tests PASSED\n";
     return 0;
 }

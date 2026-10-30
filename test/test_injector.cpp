@@ -307,8 +307,10 @@ void test_compression_fallback_and_flag_off_format() {
 
     auto memory = long_memory(static_cast<double>(std::time(nullptr)) - 60.0);
     const auto normal = memorylayer::format_memory_context_budgeted({memory}, 0.0, 2048, 50);
-    const auto legacy = memorylayer::format_memory_context_budgeted({memory}, 0.0, 2048, 50);
-    assert(normal == legacy);
+    const auto compressed = memorylayer::format_memory_context_budgeted_compressed(
+        {memory}, {1.0f}, 0.0, 2048, 50);
+    assert(normal.find(memory.memory.user_text.substr(0, 50)) != std::string::npos);
+    assert(compressed.find(memory.memory.user_text.substr(0, 50)) != std::string::npos);
     std::cout << "test_compression_fallback_and_flag_off_format PASSED\n";
 }
 
@@ -323,6 +325,10 @@ void test_facts_are_first_and_budgeted() {
     const auto fact_pos = context.find("User language: C++");
     const auto memory_pos = context.find("Relevant conversation memories:");
     assert(memory_pos == std::string::npos || fact_pos < memory_pos);
+
+    const auto too_small = memorylayer::format_fact_memory_context_budgeted(
+        {fact}, {long_memory(fact.fact.created_at)}, fact.fact.created_at, 4, 400);
+    assert(too_small.empty());
     std::cout << "test_facts_are_first_and_budgeted PASSED\n";
 }
 

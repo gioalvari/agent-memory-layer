@@ -560,6 +560,40 @@ void test_anthropic_messages_validation() {
     std::cout << "test_anthropic_messages_validation PASSED\n";
 }
 
+void test_anthropic_messages_skip_fact_extraction_without_fact_model(MockBackend& backend) {
+    backend.reset_requests();
+    TestProxy proxy(FACT_PROXY_PORT, true, deterministic_embedding);
+    proxy.start();
+    httplib::Client cli("http://localhost:" + std::to_string(proxy.port()));
+    const auto response = cli.Post("/v1/messages", {{"X-Agent-Id", "anthropic-agent"}},
+                                   anthropic_request().dump(), "application/json");
+    assert(response && response->status == 200);
+    assert(wait_until([&] { return proxy.store().count("anthropic-agent") == 1; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    assert(backend.extraction_count() == 0);
+    proxy.stop();
+    std::remove(proxy.db_path().c_str());
+    std::cout << "test_anthropic_messages_skip_fact_extraction_without_fact_model PASSED\n";
+}
+
+void test_context_budget_limits_fact_and_memory_injection(MockBackend& backend) {
+    backend.reset_requests();
+    TestProxy proxy(FACT_PROXY_PORT, true, deterministic_embedding);
+    proxy.config().max_context_tokens = 20;
+    proxy.config().max_inject_tokens = 2048;
+    const auto memory_id = proxy.store().insert("fact-agent", "stored question", "stored answer",
+                                                deterministic_embedding("", memorylayer::EmbedPriority::HIGH),
+                                                deterministic_embedding("", memorylayer::EmbedPriority::HIGH));
+    assert(proxy.store().insert_fact("fact-agent", "User", "language", "C++", memory_id,
+                                    deterministic_embedding("", memorylayer::EmbedPriority::HIGH)) > 0);
+    proxy.start();
+    post_chat(proxy.port(), std::string(200, 'x'));
+    assert(backend.last_normal_body().find("<memory context>") == std::string::npos);
+    proxy.stop();
+    std::remove(proxy.db_path().c_str());
+    std::cout << "test_context_budget_limits_fact_and_memory_injection PASSED\n";
+}
+
 // --------------- Main ---------------
 int main() {
     MockBackend backend;
@@ -588,6 +622,9 @@ int main() {
     test_admin_facts_endpoints(proxy);
 
     proxy.stop();
+
+    test_anthropic_messages_skip_fact_extraction_without_fact_model(backend);
+    test_context_budget_limits_fact_and_memory_injection(backend);
 
     test_fact_extraction_end_to_end(backend);
     test_fact_extraction_disabled_makes_no_backend_calls(backend);
