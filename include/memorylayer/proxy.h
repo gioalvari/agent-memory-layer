@@ -29,9 +29,12 @@ struct FactExtractionJob { std::string agent_id, user_text, assist_text, model; 
 class MemoryProxy {
 public:
     using EmbedHook = std::function<std::vector<float>(const std::string&, EmbedPriority)>;
+    using EmbedBatchHook = std::function<std::vector<std::vector<float>>(
+        const std::vector<std::string>&, EmbedPriority)>;
 
     MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder,
-                EmbedHook embed_hook = {});
+                 EmbedHook embed_hook = {}, TokenCounter token_counter = {},
+                 EmbedBatchHook embed_batch_hook = {});
     ~MemoryProxy();
 
     // Serves until stop(); returns false if the listen socket could not be opened.
@@ -44,6 +47,8 @@ private:
     MemoryStore& store_;
     EmbeddingWorker& embedder_;
     EmbedHook embed_hook_;
+    TokenCounter token_counter_;
+    EmbedBatchHook embed_batch_hook_;
 
     std::atomic<bool> stop_{false};
     std::atomic<httplib::Server*> svr_ptr_{nullptr};
@@ -53,6 +58,7 @@ private:
     std::mutex save_mutex_;
     std::condition_variable save_cv_;
     std::thread fact_thread_;
+    std::thread sentence_backfill_thread_;
     std::queue<FactExtractionJob> fact_queue_;
     std::mutex fact_mutex_;
     std::condition_variable fact_cv_;
@@ -67,6 +73,9 @@ private:
     void fact_loop();
     bool embedding_ready() const;
     std::vector<float> embed(const std::string& text, EmbedPriority priority) const;
+    std::vector<std::vector<float>> embed_batch(const std::vector<std::string>& texts,
+                                                EmbedPriority priority) const;
+    void sentence_backfill_loop();
 
     std::atomic<int64_t> save_drop_count_{0};
     StickyCache sticky_cache_;

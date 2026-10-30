@@ -19,11 +19,19 @@ using json = nlohmann::json;
 namespace memorylayer {
 
 MemoryProxy::MemoryProxy(const Config& cfg, MemoryStore& store, EmbeddingWorker& embedder,
-                         EmbedHook embed_hook)
+                         EmbedHook embed_hook, TokenCounter token_counter,
+                         EmbedBatchHook embed_batch_hook)
     : cfg_(cfg), store_(store), embedder_(embedder), embed_hook_(std::move(embed_hook)),
-       sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
+        token_counter_(std::move(token_counter)), embed_batch_hook_(std::move(embed_batch_hook)),
+        sticky_cache_(static_cast<std::size_t>(cfg.sticky_cache_entries)) {
+    if (!token_counter_) {
+        token_counter_ = [this](const std::string& text) { return embedder_.token_count(text); };
+    }
     saver_thread_ = std::thread(&MemoryProxy::saver_loop, this);
     if (cfg_.extract_facts) fact_thread_ = std::thread(&MemoryProxy::fact_loop, this);
+    if (cfg_.compress_memories) {
+        sentence_backfill_thread_ = std::thread(&MemoryProxy::sentence_backfill_loop, this);
+    }
 }
 
 bool MemoryProxy::embedding_ready() const {
@@ -32,6 +40,16 @@ bool MemoryProxy::embedding_ready() const {
 
 std::vector<float> MemoryProxy::embed(const std::string& text, EmbedPriority priority) const {
     return embed_hook_ ? embed_hook_(text, priority) : embedder_.embed(text, priority);
+}
+
+std::vector<std::vector<float>> MemoryProxy::embed_batch(
+    const std::vector<std::string>& texts, EmbedPriority priority) const {
+    if (embed_batch_hook_) return embed_batch_hook_(texts, priority);
+    if (!embed_hook_) return embedder_.embed_batch(texts, priority);
+    std::vector<std::vector<float>> embeddings;
+    embeddings.reserve(texts.size());
+    for (const auto& text : texts) embeddings.push_back(embed(text, priority));
+    return embeddings;
 }
 
 MemoryProxy::~MemoryProxy() {
@@ -49,6 +67,7 @@ void MemoryProxy::shutdown() {
     fact_cv_.notify_all();
     if (saver_thread_.joinable()) saver_thread_.join();
     if (fact_thread_.joinable()) fact_thread_.join();
+    if (sentence_backfill_thread_.joinable()) sentence_backfill_thread_.join();
 }
 
 bool MemoryProxy::check_admin_auth(const httplib::Request& req, httplib::Response& res) const {
@@ -132,7 +151,7 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     int injection_budget = cfg_.max_inject_tokens;
     if (cfg_.max_context_tokens > 0) {
         const int budget = std::max(
-            0, cfg_.max_context_tokens - estimate_non_system_message_tokens(messages));
+            0, cfg_.max_context_tokens - estimate_non_system_message_tokens(messages, token_counter_));
         injection_budget = std::min(injection_budget, budget);
         // Each memory is ~max_inject_tokens/top_k tokens; scale down if over budget
         if (budget < cfg_.max_inject_tokens) {
@@ -208,8 +227,9 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
     if (sticky_mode && facts.empty()) {
         const StickyFormattedContext formatted =
             format_sticky_memory_context_budgeted(memories, injection_budget,
-                                                   cfg_.memory_line_chars,
-                                                   cfg_.compress_memories ? &query_emb : nullptr);
+                                                    cfg_.memory_line_chars,
+                                                    cfg_.compress_memories ? &query_emb : nullptr,
+                                                    token_counter_);
         context = formatted.block;
         injected_ids = formatted.memory_ids;
         const auto injected_last_user = last_user_message_index(messages);
@@ -222,13 +242,15 @@ std::string MemoryProxy::retrieve_and_inject(const std::string& agent_id,
         context = facts.empty()
             ? (cfg_.compress_memories
             ? format_memory_context_budgeted_compressed(
-                   memories, query_emb, now, injection_budget,
-                   cfg_.memory_line_chars, cfg_.absolute_dates)
+                    memories, query_emb, now, injection_budget,
+                    cfg_.memory_line_chars, cfg_.absolute_dates, token_counter_)
             : format_memory_context_budgeted(memories, now, injection_budget,
-                                             cfg_.memory_line_chars, cfg_.absolute_dates))
+                                              cfg_.memory_line_chars, cfg_.absolute_dates,
+                                              token_counter_))
             : format_fact_memory_context_budgeted(
-                   facts, memories, now, injection_budget, cfg_.memory_line_chars,
-                   cfg_.compress_memories ? &query_emb : nullptr, cfg_.absolute_dates);
+                    facts, memories, now, injection_budget, cfg_.memory_line_chars,
+                    cfg_.compress_memories ? &query_emb : nullptr, cfg_.absolute_dates,
+                    token_counter_);
         if (anthropic_messages) {
             inject_anthropic_memories(request, context, parse_inject_mode(cfg_.inject_mode));
         } else {
@@ -360,15 +382,23 @@ void MemoryProxy::saver_loop() {
                 const int64_t memory_id = store_.insert(job.agent_id, job.user_text, job.assist_text,
                                                          user_emb, assist_emb);
                 if (memory_id > 0) {
-                    // This runs off the request path at NORMAL priority. Rows store
-                    // spans plus vectors, so original memory text stays canonical.
-                    for (const auto& [side, text] : std::vector<std::pair<char, std::string>>{
-                             {'u', job.user_text}, {'a', job.assist_text}}) {
+                    // This runs off the request path at NORMAL priority. Queueing all
+                    // sentence fragments together lets EmbeddingWorker pack them into
+                    // llama.cpp batches without exceeding its context/batch limits.
+                    if (cfg_.compress_memories) for (const auto& [side, text] :
+                        std::vector<std::pair<char, std::string>>{{'u', job.user_text},
+                                                                  {'a', job.assist_text}}) {
                         auto sentences = split_memory_sentences(text);
-                        for (auto& sentence : sentences) {
+                        std::vector<std::string> fragments;
+                        fragments.reserve(sentences.size());
+                        for (const auto& sentence : sentences) {
                             const std::string fragment = text.substr(
                                 sentence.start_byte, sentence.end_byte - sentence.start_byte);
-                            sentence.embedding = embed(fragment, EmbedPriority::NORMAL);
+                            fragments.push_back(fragment);
+                        }
+                        const auto embeddings = embed_batch(fragments, EmbedPriority::NORMAL);
+                        for (std::size_t i = 0; i < sentences.size() && i < embeddings.size(); ++i) {
+                            sentences[i].embedding = embeddings[i];
                         }
                         store_.store_sentences(memory_id, side, sentences);
                     }
@@ -396,6 +426,38 @@ void MemoryProxy::saver_loop() {
             }
         }
     }
+}
+
+void MemoryProxy::sentence_backfill_loop() {
+    constexpr int kBackfillBatchSize = 16;
+    int total = 0;
+    LOG_INFO("memory", "Starting compressed-memory sentence backfill");
+    while (!stop_) {
+        const auto memories = store_.list_memories_without_sentences(kBackfillBatchSize);
+        if (memories.empty()) break;
+        for (const auto& memory : memories) {
+            if (stop_) break;
+            for (const auto& [side, text] : std::vector<std::pair<char, std::string>>{
+                     {'u', memory.user_text}, {'a', memory.assist_text}}) {
+                auto sentences = split_memory_sentences(text);
+                std::vector<std::string> fragments;
+                fragments.reserve(sentences.size());
+                for (const auto& sentence : sentences) {
+                    fragments.push_back(text.substr(sentence.start_byte,
+                                                    sentence.end_byte - sentence.start_byte));
+                }
+                const auto embeddings = embed_batch(fragments, EmbedPriority::NORMAL);
+                for (std::size_t i = 0; i < sentences.size() && i < embeddings.size(); ++i) {
+                    sentences[i].embedding = embeddings[i];
+                }
+                store_.store_sentences(memory.id, side, sentences);
+            }
+            ++total;
+        }
+        LOG_INFO("memory", "Sentence backfill processed " + std::to_string(total) +
+                           " memories");
+    }
+    LOG_INFO("memory", "Sentence backfill complete: " + std::to_string(total) + " memories");
 }
 
 bool MemoryProxy::run() {
@@ -830,7 +892,7 @@ setInterval(refresh,10000);
 
         auto& messages = body["messages"];
         const HistoryTrimResult history = trim_history(
-            messages, cfg_.history_budget, cfg_.history_trim_ratio);
+            messages, cfg_.history_budget, cfg_.history_trim_ratio, token_counter_);
         if (history.trimmed) {
             messages = history.messages;
             LOG_INFO("proxy", "Trimmed " + std::to_string(history.dropped_messages) +
