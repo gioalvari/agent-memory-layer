@@ -183,8 +183,9 @@ private:
 class TestProxy {
 public:
     TestProxy(int port = PROXY_PORT, bool extract_facts = false,
-              memorylayer::MemoryProxy::EmbedHook embed_hook = {})
-        : embed_hook_(std::move(embed_hook)) {
+               memorylayer::MemoryProxy::EmbedHook embed_hook = {},
+               memorylayer::MemoryProxy::EmbedBatchHook embed_batch_hook = {})
+        : embed_hook_(std::move(embed_hook)), embed_batch_hook_(std::move(embed_batch_hook)) {
         db_path_ = "test_integration_" + std::to_string(port) + ".sqlite";
         std::remove(db_path_.c_str());
 
@@ -205,7 +206,8 @@ public:
 
     void start() {
         thread_ = std::thread([this] {
-            memorylayer::MemoryProxy proxy(cfg_, *store_, *embedder_, embed_hook_);
+            memorylayer::MemoryProxy proxy(cfg_, *store_, *embedder_, embed_hook_, {},
+                                           embed_batch_hook_);
             proxy_ = &proxy;
             proxy.run();
         });
@@ -232,6 +234,7 @@ private:
     std::unique_ptr<memorylayer::MemoryStore> store_;
     std::unique_ptr<memorylayer::EmbeddingWorker> embedder_;
     memorylayer::MemoryProxy::EmbedHook embed_hook_;
+    memorylayer::MemoryProxy::EmbedBatchHook embed_batch_hook_;
     std::string db_path_;
     std::thread thread_;
     memorylayer::MemoryProxy* proxy_ = nullptr;
@@ -489,6 +492,33 @@ void test_fact_extraction_end_to_end(MockBackend& backend) {
     std::cout << "test_fact_extraction_end_to_end PASSED\n";
 }
 
+void test_compression_backfills_and_batches_sentences() {
+    std::atomic<int> batch_calls{0};
+    std::atomic<int> largest_batch{0};
+    const auto batch_hook = [&](const std::vector<std::string>& texts,
+                                memorylayer::EmbedPriority) {
+        ++batch_calls;
+        largest_batch.store(std::max(largest_batch.load(), static_cast<int>(texts.size())));
+        return std::vector<std::vector<float>>(texts.size(), {1.0f, 0.0f, 0.0f, 0.0f});
+    };
+    TestProxy proxy(19902, false, deterministic_embedding, batch_hook);
+    proxy.store().insert("compress", "First legacy sentence is long enough. Second legacy sentence is long enough.",
+                         "First legacy response is long enough. Second legacy response is long enough.",
+                         deterministic_embedding("", memorylayer::EmbedPriority::NORMAL),
+                         deterministic_embedding("", memorylayer::EmbedPriority::NORMAL));
+    proxy.config().compress_memories = true;
+    proxy.start();
+    assert(wait_until([&] {
+        const auto memories = proxy.store().list_memories("compress", 1);
+        return !memories.empty() && proxy.store().sentence_count(memories.front().id) >= 4;
+    }));
+    assert(batch_calls.load() >= 2);
+    assert(largest_batch.load() >= 2);
+    proxy.stop();
+    std::remove(proxy.db_path().c_str());
+    std::cout << "test_compression_backfills_and_batches_sentences PASSED\n";
+}
+
 void test_fact_extraction_disabled_makes_no_backend_calls(MockBackend& backend) {
     backend.reset_requests();
     TestProxy proxy(FACT_PROXY_PORT, false, deterministic_embedding);
@@ -628,6 +658,7 @@ int main() {
 
     test_fact_extraction_end_to_end(backend);
     test_fact_extraction_disabled_makes_no_backend_calls(backend);
+    test_compression_backfills_and_batches_sentences();
     backend.stop();
 
     std::remove("test_integration.sqlite");

@@ -115,6 +115,20 @@ void test_temporal_boost_and_date_cleanup() {
     std::cout << "test_temporal_boost_and_date_cleanup PASSED\n";
 }
 
+void test_list_memories_without_sentences() {
+    std::remove("test_sentence_backfill.sqlite");
+    memorylayer::MemoryStore store("test_sentence_backfill.sqlite");
+    const int64_t id = store.insert("agent", "user text", "assistant text",
+                                    make_emb(0.1f), make_emb(0.2f));
+    assert(store.list_memories_without_sentences(10).size() == 1);
+    store.store_sentences(id, 'u', {{0, 0, 9, {1.0f}}});
+    assert(store.list_memories_without_sentences(10).size() == 1);
+    store.store_sentences(id, 'a', {{0, 0, 14, {1.0f}}});
+    assert(store.list_memories_without_sentences(10).empty());
+    std::remove("test_sentence_backfill.sqlite");
+    std::cout << "test_list_memories_without_sentences PASSED\n";
+}
+
 void test_sentence_rows_delete_with_memory() {
     std::remove("test_sentence_delete.sqlite");
     memorylayer::MemoryStore store("test_sentence_delete.sqlite");
@@ -208,6 +222,7 @@ int main() {
     test_eviction();
     test_eviction_lru_preserves_hot_memories();
     test_temporal_boost_and_date_cleanup();
+    test_list_memories_without_sentences();
     test_sentence_rows_delete_with_memory();
     test_sentence_rows_delete_with_eviction();
     test_fact_keys_and_supersession();
