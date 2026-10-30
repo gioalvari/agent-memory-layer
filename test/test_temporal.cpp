@@ -50,10 +50,31 @@ void test_date_extraction() {
     std::cout << "test_date_extraction PASSED\n";
 }
 
+void test_italian_and_spanish_queries() {
+    const auto mar5 = memorylayer::utc_day(kNow);
+    expect_window("oggi", {mar5, mar5 + 1});
+    expect_window("ieri", {mar5 - 1, mar5});
+    expect_window("domani", {mar5 + 1, mar5 + 2});
+    expect_window("3 giorni fa", {mar5 - 3, mar5 - 2});
+    expect_window("la settimana scorsa", {mar5 - 8, mar5 - 1});
+    expect_window("il mese scorso", {mar5 - 33, mar5 - 4});
+    expect_window("lunedì scorso", {mar5 - 1, mar5});
+    expect_window("a febbraio 2024", {mar5 - 33, mar5 - 4});
+    expect_window("ayer", {mar5 - 1, mar5});
+    expect_window("mañana", {mar5 + 1, mar5 + 2});
+    expect_window("hace 2 días", {mar5 - 2, mar5 - 1});
+    expect_window("la semana pasada", {mar5 - 8, mar5 - 1});
+    expect_window("el mes pasado", {mar5 - 33, mar5 - 4});
+    expect_window("el lunes pasado", {mar5 - 1, mar5});
+    expect_window("en febrero 2024", {mar5 - 33, mar5 - 4});
+    std::cout << "test_italian_and_spanish_queries PASSED\n";
+}
+
 } // namespace
 
 int main() {
     test_query_parser();
     test_date_extraction();
+    test_italian_and_spanish_queries();
     std::cout << "All temporal tests PASSED\n";
 }
