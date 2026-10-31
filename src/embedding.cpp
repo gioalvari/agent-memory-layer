@@ -148,6 +148,9 @@ void EmbeddingWorker::worker_loop() {
         int n = llama_tokenize(vocab, text.c_str(), text.size(),
                                tokens.data(), max_t, true, true);
         if (n <= 0) return {};
+        // Encoder-only models abort when a sequence exceeds n_ubatch, so
+        // embed only the leading window of very long texts.
+        n = std::min(n, n_batch_max_);
         tokens.resize(n);
 
         llama_memory_clear(llama_get_memory(ctx), true);
@@ -207,6 +210,7 @@ void EmbeddingWorker::worker_loop() {
             int n = llama_tokenize(vocab, text.c_str(), text.size(),
                                    all_tokens[i].data(), max_t, true, true);
             if (n > 0) {
+                n = std::min(n, n_batch_max_);
                 all_tokens[i].resize(n);
                 total_tokens += n;
             } else {
