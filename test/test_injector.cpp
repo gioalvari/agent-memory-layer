@@ -22,6 +22,22 @@ void test_format_memory_line() {
     std::cout << "test_format_memory_line PASSED\n";
 }
 
+void test_format_memory_line_keeps_utf8_valid() {
+    memorylayer::ScoredMemory sm;
+    sm.memory.user_text = std::string("ab") + "\xC3\xA8" + "cd";  // "abècd"
+    sm.memory.assist_text = std::string("x") + "\xE2\x82\xAC" + "yz";  // "x€yz"
+    sm.memory.created_at = static_cast<double>(std::time(nullptr));
+    double now = static_cast<double>(std::time(nullptr));
+    // Cut inside the multi-byte sequences; the result must still be valid UTF-8.
+    auto line = memorylayer::format_memory_line(sm, now, 3);
+    bool threw = false;
+    try { (void)json(line).dump(); } catch (const std::exception&) { threw = true; }
+    assert(!threw);
+    assert(line.find("ab...") != std::string::npos);
+    assert(line.find("x...") != std::string::npos);
+    std::cout << "test_format_memory_line_keeps_utf8_valid PASSED\n";
+}
+
 void test_format_memory_line_with_absolute_date() {
     memorylayer::ScoredMemory sm;
     sm.memory.user_text = "Question";
@@ -358,6 +374,7 @@ int main() {
     test_inject_anthropic_system_variants();
     test_inject_anthropic_suffix();
     test_format_memory_line();
+    test_format_memory_line_keeps_utf8_valid();
     test_format_memory_line_with_absolute_date();
     test_format_memory_context_empty();
     test_inject_with_existing_system();

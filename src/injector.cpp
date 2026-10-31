@@ -14,11 +14,6 @@ static std::string format_time_ago(double seconds_ago) {
     return std::to_string(static_cast<int>(seconds_ago / 86400)) + "d ago";
 }
 
-static std::string truncate(const std::string& s, int max_chars) {
-    if (static_cast<int>(s.size()) <= max_chars) return s;
-    return s.substr(0, max_chars) + "...";
-}
-
 static bool is_utf8_continuation(unsigned char c) {
     return (c & 0xC0) == 0x80;
 }
@@ -190,8 +185,8 @@ std::string format_memory_line(const ScoredMemory& mem, double now_unix, int max
                                bool absolute_dates) {
     double age_seconds = now_unix - mem.memory.created_at;
     std::string time_str = format_time_ago(age_seconds);
-    std::string user_part = truncate(mem.memory.user_text, max_chars);
-    std::string assist_part = truncate(mem.memory.assist_text, max_chars);
+    std::string user_part = truncate_utf8(mem.memory.user_text, max_chars);
+    std::string assist_part = truncate_utf8(mem.memory.assist_text, max_chars);
     const std::string timestamp = absolute_dates
         ? utc_date(mem.memory.created_at) + ", " + time_str
         : time_str;

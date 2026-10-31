@@ -23,7 +23,10 @@ void fnv_append(uint64_t& hash, const std::string& value) {
 
 std::string truncate(const std::string& text, int max_chars) {
     if (static_cast<int>(text.size()) <= max_chars) return text;
-    return text.substr(0, max_chars) + "...";
+    // Never split a multi-byte UTF-8 sequence: invalid UTF-8 makes JSON dump throw.
+    std::size_t end = static_cast<std::size_t>(std::max(max_chars, 0));
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return text.substr(0, end) + "...";
 }
 
 std::string utc_date(double timestamp) {
