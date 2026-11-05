@@ -7,6 +7,7 @@
 #include <thread>
 #include <future>
 #include <atomic>
+#include <optional>
 
 namespace memorylayer {
 
@@ -21,6 +22,9 @@ public:
     EmbeddingWorker& operator=(const EmbeddingWorker&) = delete;
 
     std::vector<float> embed(const std::string& text, EmbedPriority priority = EmbedPriority::NORMAL);
+    std::vector<std::vector<float>> embed_batch(const std::vector<std::string>& texts,
+                                                EmbedPriority priority = EmbedPriority::NORMAL);
+    std::optional<int> token_count(const std::string& text) const;
     int dimension() const { return n_embd_; }
     bool is_ready() const { return ready_; }
     void shutdown();

@@ -22,6 +22,22 @@ void test_format_memory_line() {
     std::cout << "test_format_memory_line PASSED\n";
 }
 
+void test_format_memory_line_keeps_utf8_valid() {
+    memorylayer::ScoredMemory sm;
+    sm.memory.user_text = std::string("ab") + "\xC3\xA8" + "cd";  // "abècd"
+    sm.memory.assist_text = std::string("x") + "\xE2\x82\xAC" + "yz";  // "x€yz"
+    sm.memory.created_at = static_cast<double>(std::time(nullptr));
+    double now = static_cast<double>(std::time(nullptr));
+    // Cut inside the multi-byte sequences; the result must still be valid UTF-8.
+    auto line = memorylayer::format_memory_line(sm, now, 3);
+    bool threw = false;
+    try { (void)json(line).dump(); } catch (const std::exception&) { threw = true; }
+    assert(!threw);
+    assert(line.find("ab...") != std::string::npos);
+    assert(line.find("x...") != std::string::npos);
+    std::cout << "test_format_memory_line_keeps_utf8_valid PASSED\n";
+}
+
 void test_format_memory_line_with_absolute_date() {
     memorylayer::ScoredMemory sm;
     sm.memory.user_text = "Question";
@@ -332,6 +348,15 @@ void test_facts_are_first_and_budgeted() {
     std::cout << "test_facts_are_first_and_budgeted PASSED\n";
 }
 
+void test_injectable_token_counter_budgets_context() {
+    const auto counter = [](const std::string&) -> std::optional<int> { return 5; };
+    auto memory = long_memory(100.0);
+    const auto context = memorylayer::format_memory_context_budgeted({memory}, 200.0, 14, 20,
+                                                                      false, counter);
+    assert(context.empty());
+    std::cout << "test_injectable_token_counter_budgets_context PASSED\n";
+}
+
 int main() {
     test_line_token_bound_holds();
     test_required_budget_fits_all_k_memories();
@@ -340,6 +365,7 @@ int main() {
     test_compression_orders_and_marks_gaps();
     test_compression_fallback_and_flag_off_format();
     test_facts_are_first_and_budgeted();
+    test_injectable_token_counter_budgets_context();
     test_inject_suffix_keeps_prefix_stable();
     test_inject_suffix_structured_content();
     test_inject_suffix_without_user_falls_back();
@@ -348,6 +374,7 @@ int main() {
     test_inject_anthropic_system_variants();
     test_inject_anthropic_suffix();
     test_format_memory_line();
+    test_format_memory_line_keeps_utf8_valid();
     test_format_memory_line_with_absolute_date();
     test_format_memory_context_empty();
     test_inject_with_existing_system();

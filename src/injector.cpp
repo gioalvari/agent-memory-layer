@@ -14,11 +14,6 @@ static std::string format_time_ago(double seconds_ago) {
     return std::to_string(static_cast<int>(seconds_ago / 86400)) + "d ago";
 }
 
-static std::string truncate(const std::string& s, int max_chars) {
-    if (static_cast<int>(s.size()) <= max_chars) return s;
-    return s.substr(0, max_chars) + "...";
-}
-
 static bool is_utf8_continuation(unsigned char c) {
     return (c & 0xC0) == 0x80;
 }
@@ -190,8 +185,8 @@ std::string format_memory_line(const ScoredMemory& mem, double now_unix, int max
                                bool absolute_dates) {
     double age_seconds = now_unix - mem.memory.created_at;
     std::string time_str = format_time_ago(age_seconds);
-    std::string user_part = truncate(mem.memory.user_text, max_chars);
-    std::string assist_part = truncate(mem.memory.assist_text, max_chars);
+    std::string user_part = truncate_utf8(mem.memory.user_text, max_chars);
+    std::string assist_part = truncate_utf8(mem.memory.assist_text, max_chars);
     const std::string timestamp = absolute_dates
         ? utc_date(mem.memory.created_at) + ", " + time_str
         : time_str;
@@ -211,19 +206,19 @@ std::string format_memory_context(const std::vector<ScoredMemory>& memories, dou
     return oss.str();
 }
 
-int estimate_tokens(const std::string& text) {
-    // Heuristic: ~4 characters per token (conservative for English text)
-    return static_cast<int>(text.size()) / 4 + 1;
+int estimate_tokens(const std::string& text, const TokenCounter& counter) {
+    return count_tokens(text, counter);
 }
 
 std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memories,
-                                            double now_unix, int max_tokens,
-                                            int line_chars, bool absolute_dates) {
+                                             double now_unix, int max_tokens,
+                                             int line_chars, bool absolute_dates,
+                                             const TokenCounter& counter) {
     if (memories.empty()) return "";
 
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    int budget = max_tokens - estimate_tokens(header, counter) - estimate_tokens(footer, counter);
 
     if (budget <= 0) return "";
 
@@ -234,7 +229,7 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
     int included = 0;
     for (const auto& sm : memories) {
         std::string line = format_memory_line(sm, now_unix, line_chars, absolute_dates) + "\n";
-        int line_tokens = estimate_tokens(line);
+        int line_tokens = estimate_tokens(line, counter);
 
         if (used_tokens + line_tokens > budget) break;
 
@@ -251,11 +246,12 @@ std::string format_memory_context_budgeted(const std::vector<ScoredMemory>& memo
 
 std::string format_memory_context_budgeted_compressed(
     const std::vector<ScoredMemory>& memories, const std::vector<float>& query_embedding,
-    double now_unix, int max_tokens, int line_chars, bool absolute_dates) {
+    double now_unix, int max_tokens, int line_chars, bool absolute_dates,
+    const TokenCounter& counter) {
     if (memories.empty()) return "";
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    const int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    const int budget = max_tokens - estimate_tokens(header, counter) - estimate_tokens(footer, counter);
     if (budget <= 0) return "";
     std::ostringstream oss;
     oss << header;
@@ -274,7 +270,7 @@ std::string format_memory_context_budgeted_compressed(
             : format_time_ago(now_unix - sm.memory.created_at);
         const std::string line = "- [" + timestamp + "] " +
                                   user + " Response: " + assist + "\n";
-        const int line_tokens = estimate_tokens(line);
+        const int line_tokens = estimate_tokens(line, counter);
         if (used_tokens + line_tokens > budget) break;
         oss << line;
         used_tokens += line_tokens;
@@ -288,18 +284,19 @@ std::string format_memory_context_budgeted_compressed(
 std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& facts,
                                                  const std::vector<ScoredMemory>& memories,
                                                  double now_unix, int max_tokens, int line_chars,
-                                                 const std::vector<float>* query_embedding,
-                                                 bool absolute_dates) {
+                                                  const std::vector<float>* query_embedding,
+                                                  bool absolute_dates,
+                                                  const TokenCounter& counter) {
     if (facts.empty()) {
         return query_embedding
             ? format_memory_context_budgeted_compressed(memories, *query_embedding, now_unix,
-                                                        max_tokens, line_chars, absolute_dates)
+                                                         max_tokens, line_chars, absolute_dates, counter)
             : format_memory_context_budgeted(memories, now_unix, max_tokens, line_chars,
-                                             absolute_dates);
+                                              absolute_dates, counter);
     }
     const std::string header(kMemoryContextHeader);
     const std::string footer(kMemoryContextFooter);
-    const int budget = max_tokens - estimate_tokens(header) - estimate_tokens(footer);
+    const int budget = max_tokens - estimate_tokens(header, counter) - estimate_tokens(footer, counter);
     if (budget <= 0) return "";
     std::ostringstream oss;
     int used = 0;
@@ -310,8 +307,8 @@ std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& f
         const auto& fact = scored.fact;
         const std::string line = "- " + fact.subject + " " + fact.attribute + ": " + fact.value +
                                  " (as of " + format_time_ago(now_unix - fact.created_at) + ")\n";
-        const int tokens = estimate_tokens(line);
-        const int header_tokens = wrote_facts_header ? 0 : estimate_tokens(facts_header);
+        const int tokens = estimate_tokens(line, counter);
+        const int header_tokens = wrote_facts_header ? 0 : estimate_tokens(facts_header, counter);
         if (used + header_tokens + tokens > budget) break;
         if (!wrote_facts_header) {
             oss << facts_header;
@@ -339,9 +336,9 @@ std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& f
                     : format_time_ago(now_unix - memory.memory.created_at);
                 const std::string line = "- [" + timestamp + "] " + user +
                                          " Response: " + assist + "\n";
-                const int tokens = estimate_tokens(line);
+                const int tokens = estimate_tokens(line, counter);
                 const int header_tokens = wrote_memories_header
-                    ? 0 : estimate_tokens(memories_header);
+                    ? 0 : estimate_tokens(memories_header, counter);
                 if (used + header_tokens + tokens > budget) break;
                 if (!wrote_memories_header) {
                     oss << memories_header;
@@ -355,8 +352,8 @@ std::string format_fact_memory_context_budgeted(const std::vector<ScoredFact>& f
             }
             const std::string line = format_memory_line(memory, now_unix, line_chars,
                                                         absolute_dates) + "\n";
-            const int tokens = estimate_tokens(line);
-            const int header_tokens = wrote_memories_header ? 0 : estimate_tokens(memories_header);
+            const int tokens = estimate_tokens(line, counter);
+            const int header_tokens = wrote_memories_header ? 0 : estimate_tokens(memories_header, counter);
             if (used + header_tokens + tokens > budget) break;
             if (!wrote_memories_header) {
                 oss << memories_header;

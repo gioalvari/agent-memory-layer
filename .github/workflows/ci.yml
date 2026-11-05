@@ -11,17 +11,52 @@ concurrency:
 
 jobs:
   build-test:
-    runs-on: macos-14  # Apple Silicon (arm64)
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            allow-failure: false
+          # CPU-only build (Metal is enabled on Apple only). Non-blocking until the
+          # first green Linux run confirms the toolchain; then drop allow-failure.
+          - os: ubuntu-latest
+            allow-failure: true
+    continue-on-error: ${{ matrix.allow-failure }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Install ccache
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ccache
+          else
+            sudo apt-get update
+            sudo apt-get install --yes ccache
+          fi
+
+      - name: Read llama.cpp revision
+        id: llama
+        run: echo "sha=$(git -C deps/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llama.cpp compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-ccache-${{ steps.llama.outputs.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ccache-
+
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+        run: cmake --build build --parallel
 
       - name: Test
         run: ctest --test-dir build --output-on-failure

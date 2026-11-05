@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <ctime>
+#include <cstring>
 #include <limits>
 #include <regex>
 #include <sstream>
@@ -12,9 +13,19 @@
 namespace memorylayer {
 namespace {
 
-constexpr std::array<const char*, 12> kMonths = {
+constexpr std::array<const char*, 12> kEnglishMonths = {
     "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november", "december",
+};
+
+constexpr std::array<const char*, 12> kItalianMonths = {
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+};
+
+constexpr std::array<const char*, 12> kSpanishMonths = {
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 };
 
 std::string lowercase(const std::string& value) {
@@ -22,6 +33,22 @@ std::string lowercase(const std::string& value) {
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lower;
+}
+
+std::string normalize_accents(std::string value) {
+    const std::array<std::pair<const char*, const char*>, 12> replacements = {{
+        {u8"à", "a"}, {u8"á", "a"}, {u8"è", "e"}, {u8"é", "e"},
+        {u8"ì", "i"}, {u8"í", "i"}, {u8"ò", "o"}, {u8"ó", "o"},
+        {u8"ù", "u"}, {u8"ú", "u"}, {u8"ñ", "n"}, {u8"Ñ", "n"},
+    }};
+    for (const auto& [accented, plain] : replacements) {
+        std::size_t pos = 0;
+        while ((pos = value.find(accented, pos)) != std::string::npos) {
+            value.replace(pos, std::strlen(accented), plain);
+            pos += std::strlen(plain);
+        }
+    }
+    return value;
 }
 
 // Howard Hinnant's civil-calendar conversion, with 1970-01-01 as day zero.
@@ -60,9 +87,11 @@ unsigned days_in_month(int year, unsigned month) {
 }
 
 std::optional<unsigned> month_number(const std::string& name) {
-    const std::string lower = lowercase(name);
-    for (unsigned index = 0; index < kMonths.size(); ++index) {
-        if (lower == kMonths[index]) return index + 1;
+    const std::string lower = normalize_accents(lowercase(name));
+    for (const auto& months : {kEnglishMonths, kItalianMonths, kSpanishMonths}) {
+        for (unsigned index = 0; index < months.size(); ++index) {
+            if (lower == months[index]) return index + 1;
+        }
     }
     return std::nullopt;
 }
@@ -77,8 +106,8 @@ std::optional<int64_t> valid_day(int year, unsigned month, unsigned day) {
 std::optional<int64_t> parse_date(const std::string& text, int default_year) {
     std::smatch match;
     static const std::regex kIso(R"(^\s*(\d{4})-(\d{2})-(\d{2})\s*$)");
-    static const std::regex kMonthDay(R"(^\s*([A-Za-z]+)\s+(\d{1,2})(?:,?\s*(\d{4}))?\s*$)");
-    static const std::regex kDayMonth(R"(^\s*(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?\s*$)");
+    static const std::regex kMonthDay(R"(^\s*([A-Za-z\xC0-\xFF]+)\s+(\d{1,2})(?:,?\s*(\d{4}))?\s*$)");
+    static const std::regex kDayMonth(R"(^\s*(\d{1,2})\s+([A-Za-z\xC0-\xFF]+)(?:\s+(\d{4}))?\s*$)");
     if (std::regex_match(text, match, kIso)) {
         return valid_day(std::stoi(match[1]), static_cast<unsigned>(std::stoi(match[2])),
                          static_cast<unsigned>(std::stoi(match[3])));
@@ -117,9 +146,26 @@ int64_t subtract_months(int64_t day, int months) {
                            std::min(date.day, days_in_month(year, target_month)));
 }
 
+std::optional<int> last_weekday_offset(const std::string& text) {
+    static const std::array<std::pair<const char*, int>, 21> kWeekdays = {{
+        {"monday", 0}, {"tuesday", 1}, {"wednesday", 2}, {"thursday", 3},
+        {"friday", 4}, {"saturday", 5}, {"sunday", 6},
+        {"lunedi", 0}, {"martedi", 1}, {"mercoledi", 2}, {"giovedi", 3},
+        {"venerdi", 4}, {"sabato", 5}, {"domenica", 6},
+        {"lunes", 0}, {"martes", 1}, {"miercoles", 2}, {"jueves", 3},
+        {"viernes", 4}, {"sabado", 5}, {"domingo", 6},
+    }};
+    for (const auto& [weekday, index] : kWeekdays) {
+        const std::regex pattern("\\b(" + std::string(weekday) +
+                                 ")\\s+(last|scorso|pasado)\\b");
+        if (std::regex_search(text, pattern)) return index;
+    }
+    return std::nullopt;
+}
+
 std::optional<int64_t> first_date_in_text(const std::string& text, int year) {
     std::smatch match;
-    static const std::regex kDate(R"((\d{4}-\d{2}-\d{2}|[A-Za-z]+\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}\s+[A-Za-z]+(?:\s+\d{4})?))",
+    static const std::regex kDate(R"((\d{4}-\d{2}-\d{2}|[A-Za-z\xC0-\xFF]+\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}\s+[A-Za-z\xC0-\xFF]+(?:\s+\d{4})?))",
                                   std::regex::icase);
     if (!std::regex_search(text, match, kDate)) return std::nullopt;
     return parse_date(match[1], year);
@@ -146,33 +192,43 @@ std::string utc_date(double unix_seconds) {
 
 std::optional<TemporalWindow> parse_temporal_window(const std::string& query,
                                                      double now_unix) {
-    const std::string text = lowercase(query);
+    const std::string text = normalize_accents(lowercase(query));
     const int64_t today = utc_day(now_unix);
     const CivilDate now_date = civil_from_days(today);
     std::smatch match;
 
-    if (std::regex_search(text, std::regex(R"(\btoday\b)"))) return one_day(today);
-    if (std::regex_search(text, std::regex(R"(\byesterday\b)"))) return one_day(today - 1);
-    if (std::regex_search(text, match, std::regex(R"(\b(\d+)\s+(days?|weeks?|months?)\s+ago\b)"))) {
-        const int count = std::stoi(match[1]);
-        const std::string unit = match[2];
-        if (unit[0] == 'd') return one_day(today - count);
-        if (unit[0] == 'w') return one_day(today - 7LL * count);
+    if (std::regex_search(text, std::regex(R"(\b(today|oggi|hoy)\b)"))) return one_day(today);
+    if (std::regex_search(text, std::regex(R"(\b(yesterday|ieri|ayer)\b)"))) return one_day(today - 1);
+    if (std::regex_search(text, std::regex(R"(\b(tomorrow|domani|manana)\b)"))) return one_day(today + 1);
+    if (std::regex_search(text, match, std::regex(
+            R"(\b(\d+)\s+(days?|weeks?|months?)\s+ago\b|\b(\d+)\s+(giorni|settimane|mesi)\s+fa\b|\bhace\s+(\d+)\s+(dias|semanas|meses)\b)"))) {
+        const int count = std::stoi(match[1].matched ? match[1].str()
+                                   : match[3].matched ? match[3].str() : match[5].str());
+        const std::string unit = match[2].matched ? match[2].str()
+                                 : match[4].matched ? match[4].str() : match[6].str();
+        if (unit == "day" || unit == "days" || unit == "giorni" || unit == "dias") return one_day(today - count);
+        if (unit == "week" || unit == "weeks" || unit == "settimane" || unit == "semanas") return one_day(today - 7LL * count);
         return one_day(subtract_months(today, count));
     }
-    if (std::regex_search(text, std::regex(R"(\blast\s+week\b)"))) {
+    if (const auto weekday = last_weekday_offset(text)) {
+        const int today_weekday = static_cast<int>((today + 3) % 7);
+        int offset = (today_weekday - *weekday + 7) % 7;
+        if (offset == 0) offset = 7;
+        return one_day(today - offset);
+    }
+    if (std::regex_search(text, std::regex(R"(\b(last\s+week|la\s+settimana\s+scorsa|la\s+semana\s+pasada)\b)"))) {
         const int64_t start = monday_of_week(today) - 7;
         return TemporalWindow{start, start + 7};
     }
-    if (std::regex_search(text, std::regex(R"(\bthis\s+week\b)"))) {
+    if (std::regex_search(text, std::regex(R"(\b(this\s+week|questa\s+settimana|esta\s+semana)\b)"))) {
         const int64_t start = monday_of_week(today);
         return TemporalWindow{start, start + 7};
     }
-    if (std::regex_search(text, std::regex(R"(\blast\s+month\b)"))) {
+    if (std::regex_search(text, std::regex(R"(\b(last\s+month|il\s+mese\s+scorso|el\s+mes\s+pasado)\b)"))) {
         const int64_t end = days_from_civil(now_date.year, now_date.month, 1);
         return TemporalWindow{subtract_months(end, 1), end};
     }
-    if (std::regex_search(text, std::regex(R"(\bthis\s+month\b)"))) {
+    if (std::regex_search(text, std::regex(R"(\b(this\s+month|questo\s+mese|este\s+mes)\b)"))) {
         const int64_t start = days_from_civil(now_date.year, now_date.month, 1);
         return TemporalWindow{start, days_from_civil(now_date.year + (now_date.month == 12),
                                                       now_date.month == 12 ? 1 : now_date.month + 1, 1)};
@@ -192,7 +248,7 @@ std::optional<TemporalWindow> parse_temporal_window(const std::string& query,
         }
     }
     if (std::regex_search(text, match,
-                          std::regex(R"(\bin\s+([a-z]+)(?:\s+(\d{4}))?\b)"))) {
+                           std::regex(R"(\b(?:in|a|en)\s+([a-z]+)(?:\s+(\d{4}))?\b)"))) {
         const auto month = month_number(match[1]);
         if (month) {
             const int year = match[2].matched ? std::stoi(match[2]) : now_date.year;
@@ -201,7 +257,7 @@ std::optional<TemporalWindow> parse_temporal_window(const std::string& query,
         }
     }
     if (std::regex_search(text, match,
-                          std::regex(R"(\bon\s+([a-z]+\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}\s+[a-z]+(?:\s+\d{4})?)\b)"))) {
+                           std::regex(R"(\b(?:on|il|el)\s+([a-z]+\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}\s+[a-z]+(?:\s+\d{4})?)\b)"))) {
         const auto date = parse_date(match[1], now_date.year);
         if (date) return one_day(*date);
     }
@@ -214,12 +270,12 @@ std::vector<int64_t> extract_mentioned_days(const std::string& text,
     const int64_t reference_day = utc_day(reference_unix);
     const int reference_year = civil_from_days(reference_day).year;
     std::vector<int64_t> days;
-    const std::string lower = lowercase(text);
-    if (std::regex_search(lower, std::regex(R"(\btoday\b)"))) days.push_back(reference_day);
-    if (std::regex_search(lower, std::regex(R"(\byesterday\b)"))) days.push_back(reference_day - 1);
+    const std::string lower = normalize_accents(lowercase(text));
+    if (std::regex_search(lower, std::regex(R"(\b(today|oggi|hoy)\b)"))) days.push_back(reference_day);
+    if (std::regex_search(lower, std::regex(R"(\b(yesterday|ieri|ayer)\b)"))) days.push_back(reference_day - 1);
 
     static const std::regex kDates(
-        R"((\d{4}-\d{2}-\d{2}|[A-Za-z]+\s+\d{1,2},\s*\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}))",
+        R"((\d{4}-\d{2}-\d{2}|[A-Za-z\xC0-\xFF]+\s+\d{1,2},\s*\d{4}|\d{1,2}\s+[A-Za-z\xC0-\xFF]+\s+\d{4}))",
         std::regex::icase);
     for (std::sregex_iterator it(text.begin(), text.end(), kDates), end; it != end; ++it) {
         if (const auto day = parse_date((*it)[1], reference_year)) days.push_back(*day);

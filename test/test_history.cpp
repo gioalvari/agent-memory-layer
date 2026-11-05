@@ -94,6 +94,18 @@ void test_trimming_is_deterministic() {
     std::cout << "test_trimming_is_deterministic PASSED\n";
 }
 
+void test_injectable_token_counter_controls_budgeting() {
+    const auto counter = [](const std::string&) -> std::optional<int> { return 10; };
+    const json messages = json::array({message("user", "old"), message("assistant", "short"),
+                                       message("user", "latest")});
+    assert(memorylayer::estimate_non_system_message_tokens(messages, counter) == 30);
+    const auto result = memorylayer::trim_history(messages, 15, 0.5, counter);
+    assert(result.trimmed);
+    assert(result.messages.size() == 1);
+    assert(result.messages[0]["content"] == "latest");
+    std::cout << "test_injectable_token_counter_controls_budgeting PASSED\n";
+}
+
 } // namespace
 
 int main() {
@@ -103,6 +115,7 @@ int main() {
     test_tool_call_and_tool_messages_stay_together();
     test_last_user_is_kept_when_over_budget();
     test_trimming_is_deterministic();
-    std::cout << "All history tests PASSED (6 tests)\n";
+    test_injectable_token_counter_controls_budgeting();
+    std::cout << "All history tests PASSED (7 tests)\n";
     return 0;
 }
