@@ -1,0 +1,38 @@
+{
+  "model": "qwen2.5-7b-instruct-q4_k_m",
+  "questions": 8,
+  "max_embed_chars": 1500,
+  "settings": {
+    "k5_b400": {
+      "flags": [
+        "--top-k",
+        "5"
+      ],
+      "exact_prompt": 1.0,
+      "same_lines_in_order": 1.0,
+      "same_line_set": 1.0,
+      "mean_lines_proxy": 5.0,
+      "mean_lines_simulated": 5.0,
+      "accuracy_proxy": 0.75,
+      "accuracy_simulated": null,
+      "mismatched_questions": []
+    },
+    "adaptive90_floor8_b400": {
+      "flags": [
+        "--target-coverage",
+        "0.9",
+        "--adaptive-k"
+      ],
+      "exact_prompt": 0.875,
+      "same_lines_in_order": 0.875,
+      "same_line_set": 1.0,
+      "mean_lines_proxy": 11.25,
+      "mean_lines_simulated": 11.25,
+      "accuracy_proxy": 0.5,
+      "accuracy_simulated": null,
+      "mismatched_questions": [
+        "a82c026e"
+      ]
+    }
+  }
+}
