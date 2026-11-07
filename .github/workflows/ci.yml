@@ -16,18 +16,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            allow-failure: false
-          # CPU-only build (Metal is enabled on Apple only). Non-blocking until the
-          # first green Linux run confirms the toolchain; then drop allow-failure.
-          - os: ubuntu-latest
-            allow-failure: true
-    continue-on-error: ${{ matrix.allow-failure }}
+        # Linux is a CPU-only build (Metal is enabled on Apple only).
+        os: [macos-15, ubuntu-latest]
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -45,7 +39,7 @@ jobs:
         run: echo "sha=$(git -C deps/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Restore llama.cpp compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ccache
           key: ${{ runner.os }}-${{ runner.arch }}-ccache-${{ steps.llama.outputs.sha }}
